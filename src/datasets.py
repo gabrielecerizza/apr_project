@@ -11,10 +11,10 @@ class VoxCelebDataset(Dataset):
         self, 
         csv_base_path: str = "E:/Datasets/VoxCeleb1/subset/", 
         set_name: str = "train",
-        type: str = "logmel_cmn"
+        feat_type: str = "logmel"
     ):
         self.set_name = set_name.lower()
-        self.type = type.lower()
+        self.type = feat_type.lower()
         self.df = pd.read_csv(csv_base_path + "subset_features.csv")
         self.df = self.df[self.df["Set"] == self.set_name]
         self.df = self.df[self.df["Type"] == self.type]
