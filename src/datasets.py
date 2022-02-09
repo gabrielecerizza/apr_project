@@ -24,7 +24,7 @@ class VoxCelebDataset(Dataset):
         self.df = self.df[self.df["Type"] == self.type]
         
         self.label_dict = pd.read_csv(
-            csv_base_path + "subset_labels.csv"
+            csv_base_path + f"subset_labels_{num_secs}.csv"
         ).to_dict()["label"]
 
     def __len__(self):
@@ -63,8 +63,12 @@ def collate_vox(batch):
     new_features_batch = []
 
     for x in features_batch:
-        x_len = x.shape[1]
+        x_len = x.shape[2]
         if x_len < max_len:
+            print("padding inside dataloader")
+            print("x shape", x.shape)
+            print("x_len", x_len)
+            print("max_len", max_len)
             padded_tensor = pad_tensor(x, x_len, max_len)
             new_features_batch.append(padded_tensor)
         else:

@@ -1,18 +1,24 @@
 from operator import itemgetter
 
 import numpy as np
+import torch.nn.functional as F
 from sklearn.metrics import roc_curve
+
+
+def torch_cosine_distances(a, b):
+    return 1 - (F.normalize(a) @ F.normalize(b).t())
 
 
 def compute_eer(scores, labels):
     fpr, tpr, threshold = roc_curve(labels, scores, pos_label=1)
     fnr = 1 - tpr
-    eer1 = fpr[np.nanargmin(np.absolute((fnr - fpr)))]
-    eer2 = fnr[np.nanargmin(np.absolute((fnr - fpr)))]
 
-    assert np.isclose(eer1, eer2), (eer1, eer2)
+    # We get the index where fnr and fpr are closest
+    idx = np.nanargmin(np.absolute((fnr - fpr)))
+    # We take the highest of the two errors
+    eer = max(fpr[idx],fnr[idx])*100
 
-    return eer1
+    return eer
 
 
 def compute_error_rates(scores, labels):

@@ -9,11 +9,11 @@ from pytorch_lightning import LightningModule
 from torch import nn, Tensor
 from torchmetrics import Accuracy, F1Score
 from tqdm.auto import tqdm
-from sklearn.metrics.pairwise import cosine_distances
 
 from src.losses import AAMSoftmaxLoss
 from src.metrics import (
-    compute_eer, compute_error_rates, compute_min_dcf
+    compute_eer, compute_error_rates, compute_min_dcf,
+    torch_cosine_distances
 )
 
 
@@ -73,16 +73,23 @@ class SpeakerRecognitionModel(LightningModule):
             if row["Augment"] != "none":
                 continue
 
+            if row["Set"] != "train":
+                continue
+
             file = row["File"]
             filename = os.path.splitext(os.path.basename(file))[0]
             features = torch.load(file).unsqueeze(1)
+            if self.trainer.gpus >= 1:
+                features = features.to("cuda")
             embeddings = self(features)[0]
 
             if self.embeddings_strategy == "mean":
                 raise NotImplementedError
             elif self.embeddings_strategy == "separate":
                 embeddings_file = self.base_path + "embeddings/" + row["Path"] \
-                    + filename + "_emb.pt"
+                    + "/" + filename + "emb.pt"
+                save_dir = os.path.dirname(embeddings_file)
+                os.makedirs(save_dir, exist_ok=True)   
                 torch.save(embeddings, embeddings_file)
 
                 embeddings_ls.append(
@@ -143,10 +150,10 @@ class SpeakerRecognitionModel(LightningModule):
                 speaker_embeddings.setdefault(speaker, []).append(embedding) 
 
         speakers = list(speaker_embeddings.keys())
-        cohort = np.vstack(
+        cohort = torch.vstack(
             [
-                np.mean(
-                    np.vstack(speaker_embeddings[speaker]), 
+                torch.mean(
+                    torch.vstack(speaker_embeddings[speaker]), 
                     axis=0,
                     keepdims=True
                 ) 
@@ -159,22 +166,30 @@ class SpeakerRecognitionModel(LightningModule):
             desc="Computing scores",
             total=len(speaker_embeddings)
         ):
-            e_distances = cosine_distances([embedding], cohort)[0]
-            e_distances = np.sort(e_distances)[:self.top_n]
+            e_distances = torch_cosine_distances(
+                embedding[0].unsqueeze(0), cohort
+            )[0]
+            e_distances, indices = torch.sort(e_distances)
+            e_distances = e_distances[:self.top_n]
 
-            me = np.mean(e_distances)
-            se = np.std(e_distances)
+            me = torch.mean(e_distances)
+            se = torch.std(e_distances)
 
-            for idx, test_speaker in batch["speakers"]:
+            for idx, test_speaker in enumerate(batch["speakers"]):
                 test_embedding = batch["embeddings"][idx]
 
-                distance = cosine_distances([embedding], [test_embedding])[0]
+                distance = torch_cosine_distances(
+                    embedding[0].unsqueeze(0), test_embedding.unsqueeze(0)
+                )[0]
 
-                t_distances = cosine_distances([test_embedding], cohort)[0]
-                t_distances = np.sort(t_distances)[:self.top_n]
+                t_distances = torch_cosine_distances(
+                    test_embedding.unsqueeze(0), cohort
+                )[0]
+                t_distances, indices = torch.sort(t_distances)
+                t_distances = t_distances[:self.top_n]
 
-                mt = np.mean(t_distances)
-                st = np.std(t_distances)
+                mt = torch.mean(t_distances)
+                st = torch.std(t_distances)
 
                 e_term = (distance - me) / se
                 t_term = (distance - mt) / st
@@ -183,11 +198,10 @@ class SpeakerRecognitionModel(LightningModule):
                 scores.append(score)
                 labels.append(int(speaker == test_speaker))
 
-        return scores, labels
+        return torch.tensor(scores), torch.tensor(labels)
 
     def training_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
-        x = x.unsqueeze(1)
         out = self(x)
         loss, logits = self.loss_func(out, true_labels)
 
@@ -205,9 +219,9 @@ class SpeakerRecognitionModel(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
-        x = x.unsqueeze(1)
         out = self(x)
         loss, logits = self.loss_func(out, true_labels)
+        batch["embeddings"] = out
 
         val_acc = self.acc(logits, true_labels)
 
@@ -218,7 +232,7 @@ class SpeakerRecognitionModel(LightningModule):
             fprs=fprs, 
             thresholds=thresholds
         )
-        val_eer = compute_eer(scores, labels)
+        val_eer = compute_eer(scores.numpy(), labels.numpy())
 
         metrics_ls = [
             ("val_loss", loss),
@@ -226,16 +240,68 @@ class SpeakerRecognitionModel(LightningModule):
             ("val_min_dcf", val_min_dcf),
             ("val_eer", val_eer)
         ]
-        for metric_name, metric_name in metrics_ls:
+        for metric_name, metric_val in metrics_ls:
             self.log(
                 metric_name, 
-                metric_name, 
-                prog_bar=True, 
-                on_step=True, 
+                metric_val, 
+                prog_bar=True,
                 on_epoch=True
             )
 
-        return loss
+        return scores, labels
+
+    def validation_epoch_end(self, outputs) -> None:
+        model_name = self.__class__.__name__.lower()
+        save_dir = "val_results/"
+        os.makedirs(save_dir, exist_ok=True)
+
+        scores, labels = [], []
+
+        for tup in outputs:
+            scores.extend(tup[0])
+            labels.extend(tup[1])
+
+        scores = torch.tensor(scores)
+        labels = torch.tensor(labels)
+
+        fnrs, fprs, thresholds = compute_error_rates(
+            scores, labels
+        )
+        val_min_dcf, _ = compute_min_dcf(
+            fnrs=fnrs, 
+            fprs=fprs, 
+            thresholds=thresholds
+        )
+        val_eer = compute_eer(scores.numpy(), labels.numpy())
+
+        metrics_ls = [ 
+            ("val_min_dcf", val_min_dcf),
+            ("val_eer", val_eer)
+        ]
+        for metric_name, metric_val in metrics_ls:
+            self.log(
+                metric_name, 
+                metric_val, 
+                prog_bar=True,
+                on_epoch=True
+            )
+
+        res = {
+            #"min_dcf": val_min_dcf.numpy(),
+            #"eer": val_eer,
+            "scores": scores.numpy().tolist(),
+            "labels": labels.numpy().tolist()
+        }
+
+        training_steps = self.num_training_steps
+
+        with open(
+            f"{save_dir}/{model_name}_steps={training_steps}.json", 
+            "w", encoding="utf-8"
+        ) as f:
+            json.dump(res, f, indent=4)
+
+        return super().validation_epoch_end(outputs)
 
     def on_test_epoch_start(self) -> None:
         self.create_embeddings()
@@ -243,6 +309,10 @@ class SpeakerRecognitionModel(LightningModule):
         return super().on_test_epoch_start()
 
     def test_step(self, batch, batch_idx):
+        x, true_labels = batch["features"], batch["labels"]
+        out = self(x)
+        batch["embeddings"] = out
+
         scores, labels = self.compute_scores(batch)
         fnrs, fprs, thresholds = compute_error_rates(scores, labels)
         test_min_dcf, _ = compute_min_dcf(
@@ -250,16 +320,16 @@ class SpeakerRecognitionModel(LightningModule):
             fprs=fprs, 
             thresholds=thresholds
         )
-        test_eer = compute_eer(scores, labels)
+        test_eer = compute_eer(scores.numpy(), labels.numpy())
 
         metrics_ls = [ 
             ("test_min_dcf", test_min_dcf),
             ("test_eer", test_eer)
         ]
-        for metric_name, metric_name in metrics_ls:
+        for metric_name, metric_val in metrics_ls:
             self.log(
                 metric_name, 
-                metric_name, 
+                metric_val, 
                 prog_bar=True, 
                 on_step=True, 
                 on_epoch=True
@@ -267,8 +337,8 @@ class SpeakerRecognitionModel(LightningModule):
 
         return scores, labels
 
-    def test_epoch_end(self, outputs):
-        model_name = str(type(self)).lower()
+    def test_epoch_end(self, outputs) -> None:
+        model_name = self.__class__.__name__.lower()
         save_dir = "results/"
         os.makedirs(save_dir, exist_ok=True)
 
@@ -278,15 +348,18 @@ class SpeakerRecognitionModel(LightningModule):
             scores.extend(tup[0])
             labels.extend(tup[1])
 
+        scores = torch.tensor(scores)
+        labels = torch.tensor(labels)
+
         fnrs, fprs, thresholds = compute_error_rates(
-            np.array(scores), np.array(labels)
+            scores, labels
         )
         min_dcf, _ = compute_min_dcf(
             fnrs=fnrs, 
             fprs=fprs, 
             thresholds=thresholds
         )
-        eer = compute_eer(scores, labels)
+        eer = compute_eer(scores.numpy(), labels.numpy())
 
         res = {
             "min_dcf": min_dcf,
@@ -303,18 +376,13 @@ class SpeakerRecognitionModel(LightningModule):
             "top_n": self.top_n
         }
 
+        training_steps = self.num_training_steps
+
         with open(
-            f"{save_dir}/{model_name}_steps={self.train_steps}.json", 
+            f"{save_dir}/{model_name}_steps={training_steps}.json", 
             "w", encoding="utf-8"
         ) as f:
             json.dump(res, f, indent=4)
-
-    def setup(self, stage):
-        if stage == "fit":
-            total_devices = self.hparams.n_gpus * self.hparams.n_nodes
-            train_batches = len(self.train_dataloader()) // total_devices
-            self.train_steps = (self.hparams.epochs * train_batches) // \
-                self.hparams.accumulate_grad_batches
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
@@ -333,6 +401,27 @@ class SpeakerRecognitionModel(LightningModule):
                 "monitor": "val_loss"
             }
         }
+
+    @property
+    def num_training_steps(self) -> int:
+        """Total training steps inferred from datamodule and devices."""
+        if self.trainer.max_steps:
+            return self.trainer.max_steps
+
+        limit_batches = self.trainer.limit_train_batches
+        batches = len(self.train_dataloader())
+        batches = min(batches, limit_batches) \
+            if isinstance(limit_batches, int) \
+            else int(limit_batches * batches)     
+
+        num_devices = max(
+            1, self.trainer.num_gpus, self.trainer.num_processes
+        )
+        if self.trainer.tpu_cores:
+            num_devices = max(num_devices, self.trainer.tpu_cores)
+
+        effective_accum = self.trainer.accumulate_grad_batches * num_devices
+        return (batches // effective_accum) * self.trainer.max_epochs
 
 
 class TDNNLayer(nn.Module):
@@ -426,7 +515,7 @@ class StatsPoolingLayer(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         mean = x.mean(dim=-1)
         std = x.std(dim=-1, unbiased=True)
-        return torch.cat([mean, std], dim=-1)
+        return torch.stack([mean, std], dim=-1)
 
 
 class TDNN(nn.Module):
@@ -569,22 +658,12 @@ class ResNet34(SpeakerRecognitionModel):
     modified version of the official PyTorch 
     Vision ResNet.
 
-    Before the final fully-connected layer,
-    we added a statistics pooling layer, as
-    described in [2].
-
     References
     ----------
         [1] K. He, X. Zhang, S. Ren and J. Sun, "Deep 
         Residual Learning for Image Recognition", 2016 IEEE 
         Conference on Computer Vision and Pattern Recognition 
         (CVPR), 2016, pp. 770-778.
-
-        [2] D. Snyder, D. Garcia-Romero, G. Sell, 
-        D. Povey and S. Khudanpur, "X-Vectors: Robust DNN 
-        Embeddings for Speaker Recognition", 2018 IEEE 
-        International Conference on Acoustics, Speech and 
-        Signal Processing (ICASSP), 2018, pp. 5329-5333.
     """
     def __init__(self, **kwargs) -> None:
         super(ResNet34, self).__init__(**kwargs)
@@ -607,7 +686,7 @@ class ResNet34(SpeakerRecognitionModel):
         self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.sp = StatsPoolingLayer()
+        # self.sp = StatsPoolingLayer()
         self.fc = nn.Linear(512, self.embeddings_dim)
 
         for m in self.modules():
@@ -634,7 +713,7 @@ class ResNet34(SpeakerRecognitionModel):
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x = self.sp(x)
+        # x = self.sp(x)
         x = self.fc(x)
 
         return x
