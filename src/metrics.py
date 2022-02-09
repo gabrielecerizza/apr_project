@@ -1,152 +1,10 @@
-import os
 from operator import itemgetter
 
 import numpy as np
-import pandas as pd
-import torch
 from sklearn.metrics import roc_curve
-from sklearn.metrics.pairwise import cosine_distances
-from torch import nn
-from tqdm.auto import tqdm
 
 
-def create_embeddings(
-    model: nn.Module,
-    base_path: str = "E:/Datasets/VoxCeleb1/subset/",
-    num_secs: int = 3,
-    feature_type: str = "logmel",
-    strategy: str = "separate"
-):
-    embeddings_ls = []
-
-    df = pd.read_csv(base_path + f"subset_features_{num_secs}.csv")
-    df = df[df["Type"] == feature_type]
-    for index, row in df.iterrows():
-        # We compute embeddings only for
-        # the original files
-        if row["Augment"] != "none":
-            continue
-
-        file = row["File"]
-        filename = os.path.splitext(os.path.basename(file))[0]
-        features = torch.load(file).unsqueeze(1)
-        embeddings = model(features)[0]
-
-        if strategy == "mean":
-            pass
-        elif strategy == "separate":
-            embeddings_file = base_path + "embeddings/" + row["Path"] \
-                + filename + "_emb.pt"
-            torch.save(embeddings, embeddings_file)
-
-            embeddings_ls.append(
-                (
-                    row["Set"], 
-                    row["Speaker"], 
-                    row["Type"], 
-                    row["Augment"], 
-                    row["Seconds"], 
-                    row["Path"], 
-                    embeddings_file
-                )
-            )
-        else:
-            raise ValueError("Invalid strategy argument")
-
-    embeddings_df = pd.DataFrame(
-        embeddings_ls, 
-        columns=[
-            "Set", "Speaker", "Type", "Augment", 
-            "Seconds", "Path", "File"
-        ]
-    )
-    embeddings_df.to_csv(
-        base_path + f"subset_embeddings_{num_secs}.csv", 
-        index_label=False
-    )
-
-
-def compute_scores(
-    batch,
-    base_path: str = "E:/Datasets/VoxCeleb1/subset/",
-    num_secs: int = 3,
-    top_n: int = 100
-):
-    """Compute scores and labels for the test/validation
-    batch provided as argument. The scores are normalized
-    according to the adaptive s-norm strategy, described
-    in [1].
-
-    Possibly a faster implementation here:
-        https://github.com/juanmc2005/SpeakerEmbeddingLossComparison
-
-    References
-    ----------
-        [1] P. Matějka et al., "Analysis of Score Normalization 
-        in Multilingual Speaker Recognition," Proc. Interspeech 
-        2017, pp. 1567-1571.
-    """
-    scores = []
-    labels = []
-
-    df = pd.read_csv(
-        base_path + f"subset_embeddings_{num_secs}.csv"
-    )
-
-    speaker_embeddings = dict()
-
-    for index, row in df.iterrows():
-        if row["Set"] == "train":
-            speaker = row["Speaker"]
-            embedding_filename = row["File"]
-            embedding = torch.load(embedding_filename)
-            speaker_embeddings.setdefault(speaker, []).append(embedding) 
-
-    speakers = list(speaker_embeddings.keys())
-    cohort = np.vstack(
-        [
-            np.mean(
-                np.vstack(speaker_embeddings[speaker]), 
-                axis=0,
-                keepdims=True
-            ) 
-            for speaker in speakers
-        ]
-    )
-
-    for speaker, embedding in tqdm(
-        speaker_embeddings.items(),
-        desc="Computing scores",
-        total=len(speaker_embeddings)
-    ):
-        e_distances = cosine_distances([embedding], cohort)[0]
-        e_distances = np.sort(e_distances)[:top_n]
-
-        me = np.mean(e_distances)
-        se = np.std(e_distances)
-
-        for idx, test_speaker in batch["speakers"]:
-            test_embedding = batch["embeddings"][idx]
-
-            distance = cosine_distances([embedding], [test_embedding])[0]
-
-            t_distances = cosine_distances([test_embedding], cohort)[0]
-            t_distances = np.sort(t_distances)[:top_n]
-
-            mt = np.mean(t_distances)
-            st = np.std(t_distances)
-
-            e_term = (distance - me) / se
-            t_term = (distance - mt) / st
-            score = 0.5 * (e_term + t_term)
-
-            scores.append(score)
-            labels.append(int(speaker == test_speaker))
-
-    return scores, labels
-
-
-def eer(scores, labels):
+def compute_eer(scores, labels):
     fpr, tpr, threshold = roc_curve(labels, scores, pos_label=1)
     fnr = 1 - tpr
     eer1 = fpr[np.nanargmin(np.absolute((fnr - fpr)))]
@@ -203,7 +61,7 @@ def compute_error_rates(scores, labels):
     return fnrs, fprs, thresholds
 
 
-def min_dcf(fnrs, fprs, thresholds, p_target=0.05, c_miss=1, c_fa=1):
+def compute_min_dcf(fnrs, fprs, thresholds, p_target=0.05, c_miss=1, c_fa=1):
     """Computes the minimum of the detection cost function.  
     The comments refer to equations in Section 3 of the NIST 2016 
     Speaker Recognition Evaluation Plan.

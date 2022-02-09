@@ -1,11 +1,339 @@
+import json
+import os
 from typing import Optional
 
+import numpy as np
+import pandas as pd
 import torch
 from pytorch_lightning import LightningModule
 from torch import nn, Tensor
 from torchmetrics import Accuracy, F1Score
+from tqdm.auto import tqdm
+from sklearn.metrics.pairwise import cosine_distances
 
-from src.losses import ArcFaceLoss, AAMSoftmaxLoss
+from src.losses import AAMSoftmaxLoss
+from src.metrics import (
+    compute_eer, compute_error_rates, compute_min_dcf
+)
+
+
+class SpeakerRecognitionModel(LightningModule):
+    def __init__(
+        self,
+        num_classes: int,
+        embeddings_dim: int = 512,
+        loss_margin: float = 0.5,
+        loss_scale: float = 64,
+        average: str = "weighted",
+        num_secs: int = 3,
+        base_path: str = "E:/Datasets/VoxCeleb1/subset/",
+        feature_type: str = "logmel",
+        embeddings_strategy: str = "separate",
+        top_n: int = 100
+    ) -> None:
+        super(SpeakerRecognitionModel, self).__init__()
+
+        self.num_classes = num_classes
+        self.embeddings_dim = embeddings_dim
+        self.loss_margin = loss_margin
+        self.loss_scale = loss_scale
+        self.average = average
+        self.num_secs = num_secs
+        self.base_path = base_path
+        self.feature_type = feature_type
+        self.embeddings_strategy = embeddings_strategy
+        self.top_n = top_n
+        self.loss_func = AAMSoftmaxLoss(
+            num_classes=num_classes,
+            embeddings_dim=embeddings_dim,
+            margin=loss_margin,
+            scale=loss_scale
+        )
+
+        self.acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average
+        )
+
+        self.f1 = F1Score(
+            num_classes=self.num_classes,
+            average=self.average
+        )
+
+    def create_embeddings(self):
+        embeddings_ls = []
+
+        df = pd.read_csv(
+            self.base_path + f"subset_features_{self.num_secs}.csv"
+        )
+        df = df[df["Type"] == self.feature_type]
+        for index, row in df.iterrows():
+            # We compute embeddings only for
+            # the original files
+            if row["Augment"] != "none":
+                continue
+
+            file = row["File"]
+            filename = os.path.splitext(os.path.basename(file))[0]
+            features = torch.load(file).unsqueeze(1)
+            embeddings = self(features)[0]
+
+            if self.embeddings_strategy == "mean":
+                raise NotImplementedError
+            elif self.embeddings_strategy == "separate":
+                embeddings_file = self.base_path + "embeddings/" + row["Path"] \
+                    + filename + "_emb.pt"
+                torch.save(embeddings, embeddings_file)
+
+                embeddings_ls.append(
+                    (
+                        row["Set"], 
+                        row["Speaker"], 
+                        row["Type"], 
+                        row["Augment"], 
+                        row["Seconds"], 
+                        row["Path"], 
+                        embeddings_file
+                    )
+                )
+            else:
+                raise ValueError("Invalid strategy argument")
+
+        embeddings_df = pd.DataFrame(
+            embeddings_ls, 
+            columns=[
+                "Set", "Speaker", "Type", "Augment", 
+                "Seconds", "Path", "File"
+            ]
+        )
+        embeddings_df.to_csv(
+            self.base_path + f"subset_embeddings_{self.num_secs}.csv", 
+            index_label=False
+        )
+
+    def compute_scores(self, batch):
+        """Compute scores and labels for the test/validation
+        batch provided as argument. The scores are normalized
+        according to the adaptive s-norm strategy, described
+        in [1].
+
+        Possibly a faster implementation here:
+            https://github.com/juanmc2005/SpeakerEmbeddingLossComparison
+
+        References
+        ----------
+            [1] P. Matějka et al., "Analysis of Score Normalization 
+            in Multilingual Speaker Recognition," Proc. Interspeech 
+            2017, pp. 1567-1571.
+        """
+        scores = []
+        labels = []
+
+        df = pd.read_csv(
+            self.base_path + f"subset_embeddings_{self.num_secs}.csv"
+        )
+
+        speaker_embeddings = dict()
+
+        for index, row in df.iterrows():
+            if row["Set"] == "train":
+                speaker = row["Speaker"]
+                embedding_filename = row["File"]
+                embedding = torch.load(embedding_filename)
+                speaker_embeddings.setdefault(speaker, []).append(embedding) 
+
+        speakers = list(speaker_embeddings.keys())
+        cohort = np.vstack(
+            [
+                np.mean(
+                    np.vstack(speaker_embeddings[speaker]), 
+                    axis=0,
+                    keepdims=True
+                ) 
+                for speaker in speakers
+            ]
+        )
+
+        for speaker, embedding in tqdm(
+            speaker_embeddings.items(),
+            desc="Computing scores",
+            total=len(speaker_embeddings)
+        ):
+            e_distances = cosine_distances([embedding], cohort)[0]
+            e_distances = np.sort(e_distances)[:self.top_n]
+
+            me = np.mean(e_distances)
+            se = np.std(e_distances)
+
+            for idx, test_speaker in batch["speakers"]:
+                test_embedding = batch["embeddings"][idx]
+
+                distance = cosine_distances([embedding], [test_embedding])[0]
+
+                t_distances = cosine_distances([test_embedding], cohort)[0]
+                t_distances = np.sort(t_distances)[:self.top_n]
+
+                mt = np.mean(t_distances)
+                st = np.std(t_distances)
+
+                e_term = (distance - me) / se
+                t_term = (distance - mt) / st
+                score = 0.5 * (e_term + t_term)
+
+                scores.append(score)
+                labels.append(int(speaker == test_speaker))
+
+        return scores, labels
+
+    def training_step(self, batch, batch_idx):
+        x, true_labels = batch["features"], batch["labels"]
+        x = x.unsqueeze(1)
+        out = self(x)
+        loss, logits = self.loss_func(out, true_labels)
+
+        train_acc = self.acc(logits, true_labels)
+
+        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_acc", train_acc, prog_bar=True, on_step=True, on_epoch=True)
+
+        return loss
+
+    def on_validation_epoch_start(self) -> None:
+        self.create_embeddings()
+
+        return super().on_validation_epoch_start()
+
+    def validation_step(self, batch, batch_idx):
+        x, true_labels = batch["features"], batch["labels"]
+        x = x.unsqueeze(1)
+        out = self(x)
+        loss, logits = self.loss_func(out, true_labels)
+
+        val_acc = self.acc(logits, true_labels)
+
+        scores, labels = self.compute_scores(batch)
+        fnrs, fprs, thresholds = compute_error_rates(scores, labels)
+        val_min_dcf, _ = compute_min_dcf(
+            fnrs=fnrs, 
+            fprs=fprs, 
+            thresholds=thresholds
+        )
+        val_eer = compute_eer(scores, labels)
+
+        metrics_ls = [
+            ("val_loss", loss),
+            ("val_acc", val_acc), 
+            ("val_min_dcf", val_min_dcf),
+            ("val_eer", val_eer)
+        ]
+        for metric_name, metric_name in metrics_ls:
+            self.log(
+                metric_name, 
+                metric_name, 
+                prog_bar=True, 
+                on_step=True, 
+                on_epoch=True
+            )
+
+        return loss
+
+    def on_test_epoch_start(self) -> None:
+        self.create_embeddings()
+
+        return super().on_test_epoch_start()
+
+    def test_step(self, batch, batch_idx):
+        scores, labels = self.compute_scores(batch)
+        fnrs, fprs, thresholds = compute_error_rates(scores, labels)
+        test_min_dcf, _ = compute_min_dcf(
+            fnrs=fnrs, 
+            fprs=fprs, 
+            thresholds=thresholds
+        )
+        test_eer = compute_eer(scores, labels)
+
+        metrics_ls = [ 
+            ("test_min_dcf", test_min_dcf),
+            ("test_eer", test_eer)
+        ]
+        for metric_name, metric_name in metrics_ls:
+            self.log(
+                metric_name, 
+                metric_name, 
+                prog_bar=True, 
+                on_step=True, 
+                on_epoch=True
+            )
+
+        return scores, labels
+
+    def test_epoch_end(self, outputs):
+        model_name = str(type(self)).lower()
+        save_dir = "results/"
+        os.makedirs(save_dir, exist_ok=True)
+
+        scores, labels = [], []
+
+        for tup in outputs:
+            scores.extend(tup[0])
+            labels.extend(tup[1])
+
+        fnrs, fprs, thresholds = compute_error_rates(
+            np.array(scores), np.array(labels)
+        )
+        min_dcf, _ = compute_min_dcf(
+            fnrs=fnrs, 
+            fprs=fprs, 
+            thresholds=thresholds
+        )
+        eer = compute_eer(scores, labels)
+
+        res = {
+            "min_dcf": min_dcf,
+            "eer": eer,
+            "model_name": model_name,
+            "embeddings_dim": self.embeddings_dim,
+            "loss": self.loss_func.__class__.__name__,
+            "loss_margin": self.loss_margin,
+            "loss_scale": self.loss_scale,
+            "average": self.average,
+            "num_secs": self.num_secs,
+            "feature_type": self.feature_type,
+            "embeddings_strategy": self.embeddings_strategy,
+            "top_n": self.top_n
+        }
+
+        with open(
+            f"{save_dir}/{model_name}_steps={self.train_steps}.json", 
+            "w", encoding="utf-8"
+        ) as f:
+            json.dump(res, f, indent=4)
+
+    def setup(self, stage):
+        if stage == "fit":
+            total_devices = self.hparams.n_gpus * self.hparams.n_nodes
+            train_batches = len(self.train_dataloader()) // total_devices
+            self.train_steps = (self.hparams.epochs * train_batches) // \
+                self.hparams.accumulate_grad_batches
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.parameters(), 
+            lr=2e-5, 
+            eps=1e-8
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer=optimizer, patience=2
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "monitor": "val_loss"
+            }
+        }
+
 
 class TDNNLayer(nn.Module):
     """Time delay neural network layer, as described in [1].
@@ -235,7 +563,7 @@ class ResNetBlock(nn.Module):
         return out
 
 
-class ResNet34(LightningModule):
+class ResNet34(SpeakerRecognitionModel):
     """ResNet34 model, as described in [1]. The
     implementation is a simplified and slightly
     modified version of the official PyTorch 
@@ -258,25 +586,10 @@ class ResNet34(LightningModule):
         International Conference on Acoustics, Speech and 
         Signal Processing (ICASSP), 2018, pp. 5329-5333.
     """
-    def __init__(
-        self,
-        num_classes: int,
-        embeddings_dim: int = 512,
-        loss_margin: float = 0.5,
-        loss_scale: float = 64,
-        average: str = "weighted"
-    ) -> None:
-        super(ResNet34, self).__init__()
+    def __init__(self, **kwargs) -> None:
+        super(ResNet34, self).__init__(**kwargs)
 
-        self.num_classes = num_classes
-        self.embeddings_dim = embeddings_dim
         self.current_channels = 64
-        self.loss_func = AAMSoftmaxLoss(
-            num_classes=num_classes,
-            embeddings_dim=embeddings_dim,
-            margin=loss_margin,
-            scale=loss_scale
-        )
 
         self.conv1 = nn.Conv2d(
             1, 
@@ -295,7 +608,7 @@ class ResNet34(LightningModule):
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.sp = StatsPoolingLayer()
-        self.fc = nn.Linear(512, embeddings_dim)
+        self.fc = nn.Linear(512, self.embeddings_dim)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -307,16 +620,6 @@ class ResNet34(LightningModule):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-
-        self.acc = Accuracy(
-            num_classes=num_classes,
-            average=average
-        )
-
-        self.f1 = F1Score(
-            num_classes=num_classes,
-            average=average
-        )
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv1(x)
@@ -372,54 +675,3 @@ class ResNet34(LightningModule):
             )
 
         return nn.Sequential(*layers)
-
-    def training_step(self, batch, batch_idx):
-        x, true_labels = batch["features"], batch["labels"]
-        x = x.unsqueeze(1)
-        out = self(x)
-        loss, logits = self.loss_func(out, true_labels)
-
-        train_acc = self.acc(logits, true_labels)
-
-        self.log("train_loss", loss, prog_bar=True)
-        self.log("train_acc", train_acc, prog_bar=True, on_step=True, on_epoch=True)
-
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        x, true_labels = batch["features"], batch["labels"]
-        x = x.unsqueeze(1)
-        out = self(x)
-        loss, logits = self.loss_func(out, true_labels)
-
-        val_acc = self.acc(logits, true_labels)
-
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_acc", val_acc, prog_bar=True, on_step=True, on_epoch=True)
-
-        return loss
-
-    def test_step(self, batch, batch_idx):
-        x, true_labels = batch["features"], batch["labels"]
-        x = x.unsqueeze(1)
-        out = self(x)
-        loss, logits = self.loss_func(out, true_labels)
-        return loss
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.parameters(), 
-            lr=2e-5, 
-            eps=1e-8
-        )
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer=optimizer, patience=2
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "epoch",
-                "monitor": "val_loss"
-            }
-        }

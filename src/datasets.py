@@ -11,11 +11,15 @@ class VoxCelebDataset(Dataset):
         self, 
         csv_base_path: str = "E:/Datasets/VoxCeleb1/subset/", 
         set_name: str = "train",
-        feat_type: str = "logmel"
+        feat_type: str = "logmel",
+        num_secs: int = 3
     ):
         self.set_name = set_name.lower()
         self.type = feat_type.lower()
-        self.df = pd.read_csv(csv_base_path + "subset_features.csv")
+        self.num_secs = num_secs
+        self.df = pd.read_csv(
+            csv_base_path + f"subset_features_{num_secs}.csv"
+        )
         self.df = self.df[self.df["Set"] == self.set_name]
         self.df = self.df[self.df["Type"] == self.type]
         
@@ -34,7 +38,8 @@ class VoxCelebDataset(Dataset):
         speaker_id = self.df.iloc[idx]["Speaker"]
         sample = {
             "features": torch.load(filename),
-            "label": torch.tensor(self.label_dict[speaker_id])
+            "label": torch.tensor(self.label_dict[speaker_id]),
+            "speaker": speaker_id
         }
 
         return sample
@@ -70,7 +75,8 @@ def collate_vox(batch):
 
     return {
         "features": features,
-        "labels": labels
+        "labels": labels,
+        "speakers": [x["speaker"] for x in batch]
     }
 
 
