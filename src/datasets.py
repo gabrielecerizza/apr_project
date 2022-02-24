@@ -1,5 +1,6 @@
 import pandas as pd
 import torch
+import torchaudio.transforms as T
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 
@@ -12,11 +13,16 @@ class VoxCelebDataset(Dataset):
         csv_base_path: str = "E:/Datasets/VoxCeleb1/subset/", 
         set_name: str = "train",
         feat_type: str = "logmel",
-        num_secs: int = 3
+        num_secs: int = 3,
+        spec_augment: bool = True
     ):
+        super(VoxCelebDataset, self).__init__()
+
         self.set_name = set_name.lower()
         self.type = feat_type.lower()
         self.num_secs = num_secs
+        self.spec_augment = spec_augment
+
         self.df = pd.read_csv(
             csv_base_path + f"subset_features_{num_secs}.csv"
         )
@@ -27,6 +33,9 @@ class VoxCelebDataset(Dataset):
             csv_base_path + f"subset_labels_{num_secs}.csv"
         ).to_dict()["label"]
 
+        self.freq_masking = T.FrequencyMasking(freq_mask_param=30)
+        self.time_masking = T.TimeMasking(time_mask_param=80)
+
     def __len__(self):
         return len(self.df)
 
@@ -34,10 +43,15 @@ class VoxCelebDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
+        features = torch.load(filename)
+        if self.spec_augment and self.set_name == "train":
+            features = self.freq_masking(features)
+            features = self.time_masking(features)
+
         filename = self.df.iloc[idx]["File"]
         speaker_id = self.df.iloc[idx]["Speaker"]
         sample = {
-            "features": torch.load(filename),
+            "features": features,
             "label": torch.tensor(self.label_dict[speaker_id]),
             "speaker": speaker_id
         }

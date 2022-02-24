@@ -119,7 +119,7 @@ class MeanNormalizer:
 
 
 def extract_logmel(waveform, sample_rate, n_mels):
-    # with sample rate 16000 Hz, 1/16000 * 400 = 0.025
+    # With sample rate 16000 Hz, 1/16000 * 400 = 0.025
     # so n_fft = 400 yields windows of 25 ms
     n_fft = 400 
     win_length = None
@@ -174,8 +174,14 @@ def create_features(
         filename = os.path.splitext(os.path.basename(wav_path))[0]
         waveform, sample_rate = torchaudio.load(wav_path)
 
-        for augment in ["none", "speed", "noise", "reverb", "babble"]:
+        for augment in [
+            "none", "speed", "noise", 
+            "reverb", "babble"
+        ]:
             filename_aug = ""
+
+            if row["Set"] != "train" and augment != "none":
+                continue
 
             if augment == "speed":
                 try:
@@ -206,20 +212,11 @@ def create_features(
                 + row["Set"] + "/" + row["File"]
             save_dir = os.path.dirname(save_path)
 
-            try:
-                melspec = extract_logmel(
-                    waveform=waveform, 
-                    sample_rate=sample_rate, 
-                    n_mels=n_mels
-                )
-            except Exception as e:
-                print("Error in logmel")
-                print(index)
-                print(wav_path)
-                print(augment)
-                print(waveform.shape)
-                print(waveform)
-                print(e)
+            melspec = extract_logmel(
+                waveform=waveform, 
+                sample_rate=sample_rate, 
+                n_mels=n_mels
+            )
 
             melspec_filename = save_dir + "/" + filename \
                 + "_" + filename_aug + ".pt"

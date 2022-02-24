@@ -1,16 +1,16 @@
 import json
 import os
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from pytorch_lightning import LightningModule
 from torch import nn, Tensor
 from torchmetrics import Accuracy, F1Score
 from tqdm.auto import tqdm
 
-from src.losses import AAMSoftmaxLoss
 from src.metrics import (
     compute_eer, compute_error_rates, compute_min_dcf,
     torch_cosine_distances
@@ -22,8 +22,7 @@ class SpeakerRecognitionModel(LightningModule):
         self,
         num_classes: int,
         embeddings_dim: int = 512,
-        loss_margin: float = 0.5,
-        loss_scale: float = 64,
+        loss_func: Callable = None,
         average: str = "weighted",
         num_secs: int = 3,
         base_path: str = "E:/Datasets/VoxCeleb1/subset/",
@@ -35,21 +34,14 @@ class SpeakerRecognitionModel(LightningModule):
 
         self.num_classes = num_classes
         self.embeddings_dim = embeddings_dim
-        self.loss_margin = loss_margin
-        self.loss_scale = loss_scale
         self.average = average
         self.num_secs = num_secs
         self.base_path = base_path
         self.feature_type = feature_type
         self.embeddings_strategy = embeddings_strategy
         self.top_n = top_n
-        self.loss_func = AAMSoftmaxLoss(
-            num_classes=num_classes,
-            embeddings_dim=embeddings_dim,
-            margin=loss_margin,
-            scale=loss_scale
-        )
-
+        self.loss_func = loss_func
+            
         self.acc = Accuracy(
             num_classes=self.num_classes,
             average=self.average
@@ -195,7 +187,9 @@ class SpeakerRecognitionModel(LightningModule):
                 t_term = (distance - mt) / st
                 score = 0.5 * (e_term + t_term)
 
-                scores.append(score)
+                # We negate the score so that the score is
+                # higher if the embeddings are similar
+                scores.append(-score)
                 labels.append(int(speaker == test_speaker))
 
         return torch.tensor(scores), torch.tensor(labels)
@@ -243,9 +237,7 @@ class SpeakerRecognitionModel(LightningModule):
         for metric_name, metric_val in metrics_ls:
             self.log(
                 metric_name, 
-                metric_val, 
-                prog_bar=True,
-                on_epoch=True
+                metric_val
             )
 
         return scores, labels
@@ -287,16 +279,14 @@ class SpeakerRecognitionModel(LightningModule):
             )
 
         res = {
-            #"min_dcf": val_min_dcf.numpy(),
-            #"eer": val_eer,
+            "min_dcf": val_min_dcf.numpy().tolist(),
+            "eer": val_eer,
             "scores": scores.numpy().tolist(),
             "labels": labels.numpy().tolist()
         }
 
-        training_steps = self.num_training_steps
-
         with open(
-            f"{save_dir}/{model_name}_steps={training_steps}.json", 
+            f"{save_dir}/{model_name}_epoch={self.current_epoch}.json", 
             "w", encoding="utf-8"
         ) as f:
             json.dump(res, f, indent=4)
@@ -376,10 +366,8 @@ class SpeakerRecognitionModel(LightningModule):
             "top_n": self.top_n
         }
 
-        training_steps = self.num_training_steps
-
         with open(
-            f"{save_dir}/{model_name}_steps={training_steps}.json", 
+            f"{save_dir}/{model_name}_epoch={self.current_epoch}.json", 
             "w", encoding="utf-8"
         ) as f:
             json.dump(res, f, indent=4)
@@ -474,7 +462,7 @@ class TDNNLayer(nn.Module):
                 padding=padding,
                 dilation=dilation
             ),
-            nn.ReLU()
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -497,7 +485,7 @@ class DenseLayer(nn.Module):
                 in_features=in_features, 
                 out_features=out_features
             ),
-            nn.ReLU()
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -560,7 +548,7 @@ class TDNN(nn.Module):
         )
 
         self.output_seq = nn.Sequential(
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             DenseLayer(in_features=embeddings_dim, out_features=512),
             nn.Linear(in_features=512, out_features=512),
             nn.Softmax(dim=num_classes)
@@ -628,7 +616,7 @@ class ResNetBlock(nn.Module):
 
         self.conv1 = conv3x3(in_channels, out_channels, stride)
         self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
         self.conv2 = conv3x3(out_channels, out_channels)
         self.bn2 = nn.BatchNorm2d(out_channels)
 
@@ -679,7 +667,7 @@ class ResNet34(SpeakerRecognitionModel):
             bias=False
         )
         self.bn1 = nn.BatchNorm2d(self.current_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.conv2_x = self._make_sequence(64, num_blocks=3)
         self.conv3_x = self._make_sequence(128, num_blocks=4, stride=2)
@@ -754,3 +742,342 @@ class ResNet34(SpeakerRecognitionModel):
             )
 
         return nn.Sequential(*layers)
+
+
+class SEBlock(nn.Module):
+    """Squeeze-and-excitation block, as described in [1].
+
+    References
+    ----------
+        [1] J. Hu et al., "Squeeze-and-Excitation Networks," 
+        IEEE Transactions on Pattern Analysis and Machine 
+        Intelligence, vol. 42, no. 8, 2020, pp. 2011-2023.
+    """
+    def __init__(
+        self, 
+        n_channels: int,
+        reduction_ratio: int = 16,
+    ) -> None:
+        super(SEBlock, self).__init__()
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.seq = nn.Sequential(
+            nn.Linear(n_channels, n_channels // reduction_ratio),    
+            nn.ReLU(inplace=True),
+            nn.Linear(n_channels // reduction_ratio, n_channels),
+            nn.Sigmoid()
+        )
+        
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, n_channels, _, _ = x.size()
+        out = self.pool(x).view(batch_size, n_channels)
+        out = self.seq(out)
+        return x * out.view(batch_size, n_channels, 1, 1)
+
+
+class SERes2Block(nn.Module):
+    """Variant of the SE-Res2Block described in [1]. We
+    modified the architecture to follow more closely the
+    Res2Block described in [2], by using 2d convolution.
+    We also inverted the order of RELU and Batch 
+    Normalization.
+
+    References
+    ----------
+        [1] B. Desplanques et al., "ECAPA-TDNN: Emphasized 
+        Channel Attention, Propagation and Aggregation TDNN 
+        Based Speaker Verification," in Proc. Interspeech 
+        2020, 2020, pp. 3830-3834.
+
+        [2] S.-H. Gao et al., "Res2Net: A New Multi-Scale 
+        Backbone Architecture," IEEE Transactions on Pattern 
+        Analysis and Machine Intelligence, vol. 43, no. 2, 
+        2021, pp. 652-662.
+    """
+    def __init__(
+        self,
+        n_channels: int,
+        scale: int,
+        dilation: int
+    ) -> None:
+        super(SERes2Block, self).__init__()
+        self.scale = scale
+        self.conv1 = nn.Conv2d(n_channels, n_channels, kernel_size=1)
+        self.bn1 = nn.BatchNorm2d(n_channels)
+        self.relu1 = nn.ReLU()
+
+        conv_ls = [
+            nn.Conv2d(
+                n_channels // scale, 
+                n_channels // scale, 
+                kernel_size=3,
+                padding=dilation,
+                dilation=dilation
+            )
+            for _ in range(scale - 1)
+        ]
+
+        self.K = nn.ModuleList([nn.Identity()] + conv_ls)
+        self.bn2 = nn.BatchNorm2d(n_channels)
+        self.relu2 = nn.ReLU()
+        self.conv2 = nn.Conv2d(n_channels, n_channels, kernel_size=1)
+        self.bn3 = nn.BatchNorm2d(n_channels)
+        self.relu3 = nn.ReLU()
+        self.se = SEBlock(n_channels)
+
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu1(out)
+
+        out_ls = torch.split(out, out.size(1)//self.scale, dim=1)
+        y_ls = []
+        
+        for idx in range(self.scale):
+            out_split = out_ls[idx]
+            k_fun = self.K[idx]
+            if idx <= 1:
+                y_ls.append(k_fun(out_split))
+            else:
+                prev = y_ls[idx - 1]
+                y_ls.append(k_fun(out_split + prev))
+
+        out = torch.cat(y_ls, dim=1)
+        out = self.bn2(out)
+        out = self.relu2(out)
+        out = self.conv2(out)
+        out = self.bn3(out)
+        out = self.relu3(out)
+        out = self.se(out)
+
+        return out + x
+
+
+class AttentiveStatPooling(nn.Module):
+    """Attentive stat pooling layer, as described in [1].
+    We provide also an implementation with convolution.
+    Since the paper worked with MFCC instead of spectrograms,
+    we averaged the values of mean and std, so that we
+    could remove one dimension.
+
+    References
+    ----------
+        [1] B. Desplanques et al., "ECAPA-TDNN: Emphasized 
+        Channel Attention, Propagation and Aggregation TDNN 
+        Based Speaker Verification," in Proc. Interspeech 
+        2020, 2020, pp. 3830-3834. 
+    """
+    def __init__(
+        self, 
+        in_features: int, 
+        latent_features: int,
+        conv: bool = False
+    ) -> None:
+        super(AttentiveStatPooling, self).__init__()
+        if conv:
+            self.seq = nn.Sequential(
+                nn.Conv2d(in_features, latent_features, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(latent_features, in_features, kernel_size=1)
+            )
+        else:
+            self.seq = nn.Sequential(
+                nn.Linear(in_features, latent_features),
+                nn.ReLU(inplace=True),
+                nn.Linear(latent_features, in_features)
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        attn_weights = F.softmax(self.seq(x), dim=1)
+        mean = torch.sum(attn_weights * x, dim=2).mean(-1)
+        std = torch.sum(attn_weights * x ** 2, dim=2).mean(-1) - (mean ** 2)
+        std = torch.sqrt(std)
+
+        return torch.cat([mean, std], dim=1)
+
+
+class Var_ECAPA(SpeakerRecognitionModel):
+    """Variant of the ECAPA-TDNN model described in [1]. We
+    omit the last batch normalization layer and adopt a
+    different SE-Res2Block and Attentive Stats pooling
+    layer. We also work on spectrograms instead of MFCC.
+
+    References
+    ----------
+        [1] B. Desplanques et al., "ECAPA-TDNN: Emphasized 
+        Channel Attention, Propagation and Aggregation TDNN 
+        Based Speaker Verification," in Proc. Interspeech 
+        2020, 2020, pp. 3830-3834. 
+    """
+    def __init__(
+        self, 
+        n_channels: int = 248,
+        scale: int = 8, 
+        **kwargs
+    ) -> None:
+        super(Var_ECAPA, self).__init__(**kwargs)
+
+        self.conv1 = nn.Conv2d(1, n_channels, kernel_size=5, padding=1)
+        self.bn1 = nn.BatchNorm2d(n_channels)
+        self.relu1 = nn.ReLU()
+        self.se1 = SERes2Block(n_channels, scale, dilation=2)
+        self.se2 = SERes2Block(n_channels, scale, dilation=3)
+        self.se3 = SERes2Block(n_channels, scale, dilation=4)
+        self.conv2 = nn.Conv2d(n_channels * 3, n_channels, kernel_size=1, padding=1)
+        self.attn_pool = AttentiveStatPooling(n_channels, n_channels // 10, conv=True)
+        self.bn2 = nn.BatchNorm1d(n_channels * 2)
+        self.fc = nn.Linear(n_channels * 2, self.embeddings_dim)
+
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu1(out)
+        out_se1 = self.se1(out)
+        out_se2 = self.se2(out_se1)
+        out_se3 = self.se3(out_se2)
+        out = torch.cat([out_se1, out_se2, out_se3], dim=1)
+        out = self.conv2(out)
+        out = self.attn_pool(out)
+        out = self.bn2(out)
+        out = self.fc(out)
+    
+        return out
+
+
+class ResLSTM(nn.Module):
+    """Variant of a residual block with bidirectional LSTM
+    described in [1].
+
+    References
+    ----------
+        [1] Y. Zhang, W. Chan and N. Jaitly, "Very Deep 
+        Convolutional Networks for End-to-End Speech 
+        Recognition," 2016, https://arxiv.org/abs/1610.03022
+    """
+    def __init__(
+        self, 
+        input_size: int, 
+        hidden_size: int = 512,
+        target_size: int = 80,
+        n_channels: int = 32
+    ) -> None:
+        super(ResLSTM, self).__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size // 2,
+            batch_first=True,
+            bidirectional=True
+        )
+        self.fc = nn.Linear(hidden_size, target_size)
+        self.bn = nn.BatchNorm1d(n_channels)
+        self.gelu = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out, _ = self.lstm(x)
+        out = self.fc(out)
+        out = self.bn(out)
+        out = self.gelu(out)
+
+        return out + x
+
+
+class MHA_LAS(nn.Module):
+    """Variant of the LAS model described in [1], with
+    the encoder being extended according to the 
+    Transformer architecture [2].
+
+    References
+    ----------
+        [1] K. Irie et al., "On the Choice of Modeling 
+        Unit for Sequence-to-Sequence Speech Recognition,"
+        Interspeech 2019, 2019.
+
+        [2] A. Vaswani et al., "Attention Is All You Need,"
+        2017, https://arxiv.org/abs/1706.03762
+    """
+    def __init__(
+        self, 
+        embeddings_dim: int,
+        n_channels: int = 32,
+        n_mels: int = 80,
+        num_heads: int = 8,
+        dropout: float = 0.2
+    ) -> None:
+        super(MHA_LAS, self).__init__()
+
+        self.embeddings_dim = embeddings_dim
+        self.n_channels = n_channels
+        self.num_heads = num_heads
+        self.head_dim = embeddings_dim // num_heads
+
+        self.conv1 = nn.Conv2d(1, n_channels, kernel_size=3, stride=2)
+        self.gelu1 = nn.GELU()
+        self.bn1 = nn.BatchNorm2d(n_channels)
+        self.conv2 = nn.Conv2d(n_channels, n_channels, kernel_size=3, stride=2)
+        self.gelu2 = nn.GELU()
+        self.bn2 = nn.BatchNorm2d(n_channels)
+        self.avg1 = nn.AdaptiveAvgPool2d((n_mels,1))
+        self.reslstm1 = ResLSTM(n_mels)
+        self.reslstm2 = ResLSTM(n_mels)
+        self.reslstm3 = ResLSTM(n_mels)
+        self.reslstm4 = ResLSTM(n_mels)
+
+        self.qkv_proj = nn.Linear(n_mels, 3 * n_mels)
+        self.mha = nn.MultiheadAttention(
+            embed_dim=n_mels,
+            num_heads=num_heads, 
+            batch_first=True
+        )
+        self.norm1 = nn.LayerNorm(n_mels)
+        self.dropout = nn.Dropout(dropout)
+        self.mlp = nn.Sequential(
+            nn.Linear(n_mels * n_channels, self.embeddings_dim // 2),
+            nn.Dropout(dropout),
+            nn.ReLU(inplace=True),
+            nn.Linear(self.embeddings_dim // 2, self.embeddings_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv1(x)
+        out = self.gelu1(out)
+        out = self.bn1(out)
+        out = self.conv2(out)
+        out = self.gelu2(out)
+        out = self.bn2(out)
+        out = self.avg1(out).squeeze(-1)
+        out = self.reslstm1(out)
+        out = self.reslstm2(out)
+        out = self.reslstm3(out)
+        out = self.reslstm4(out)
+
+        qkv = self.qkv_proj(out)
+        q, k, v = qkv.chunk(3, dim=-1)
+        
+        attn, _ = self.mha(query=q, key=k, value=v)
+        out = out + self.dropout(attn)
+        out = self.norm1(out)
+
+        batch_size, n_channels, n_mels = out.shape
+        out = out.view(batch_size, n_channels * n_mels)
+    
+        out = self.mlp(out)
+
+        return out
