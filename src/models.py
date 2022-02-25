@@ -1,8 +1,8 @@
 import json
+import math
 import os
 from typing import Callable, Optional
 
-import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
@@ -425,7 +425,7 @@ class TDNNLayer(nn.Module):
         [1] V. Peddinti, D. Povey and Sanjeev Khudanpur,
         "A time delay neural network architecture for 
         efficient modeling of long temporal contexts",
-        in Proc. Interspeech 2015, 2015.
+        Proc. Interspeech 2015, 2015.
     """
     def __init__(
         self,
@@ -675,7 +675,8 @@ class ResNet34(SpeakerRecognitionModel):
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         # self.sp = StatsPoolingLayer()
-        self.fc = nn.Linear(512, self.embeddings_dim)
+        self.embeddings = nn.Linear(512, self.embeddings_dim)
+        self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -702,7 +703,9 @@ class ResNet34(SpeakerRecognitionModel):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         # x = self.sp(x)
-        x = self.fc(x)
+        x = self.embeddings(x)
+        if self.training:
+            out = self.clf(out)
 
         return x
     
@@ -749,7 +752,7 @@ class SEBlock(nn.Module):
 
     References
     ----------
-        [1] J. Hu et al., "Squeeze-and-Excitation Networks," 
+        [1] J. Hu et al., "Squeeze-and-Excitation Networks", 
         IEEE Transactions on Pattern Analysis and Machine 
         Intelligence, vol. 42, no. 8, 2020, pp. 2011-2023.
     """
@@ -791,11 +794,11 @@ class SERes2Block(nn.Module):
     ----------
         [1] B. Desplanques et al., "ECAPA-TDNN: Emphasized 
         Channel Attention, Propagation and Aggregation TDNN 
-        Based Speaker Verification," in Proc. Interspeech 
+        Based Speaker Verification", Proc. Interspeech 
         2020, 2020, pp. 3830-3834.
 
         [2] S.-H. Gao et al., "Res2Net: A New Multi-Scale 
-        Backbone Architecture," IEEE Transactions on Pattern 
+        Backbone Architecture", IEEE Transactions on Pattern 
         Analysis and Machine Intelligence, vol. 43, no. 2, 
         2021, pp. 652-662.
     """
@@ -874,7 +877,7 @@ class AttentiveStatPooling(nn.Module):
     ----------
         [1] B. Desplanques et al., "ECAPA-TDNN: Emphasized 
         Channel Attention, Propagation and Aggregation TDNN 
-        Based Speaker Verification," in Proc. Interspeech 
+        Based Speaker Verification", Proc. Interspeech 
         2020, 2020, pp. 3830-3834. 
     """
     def __init__(
@@ -916,7 +919,7 @@ class Var_ECAPA(SpeakerRecognitionModel):
     ----------
         [1] B. Desplanques et al., "ECAPA-TDNN: Emphasized 
         Channel Attention, Propagation and Aggregation TDNN 
-        Based Speaker Verification," in Proc. Interspeech 
+        Based Speaker Verification", Proc. Interspeech 
         2020, 2020, pp. 3830-3834. 
     """
     def __init__(
@@ -936,7 +939,8 @@ class Var_ECAPA(SpeakerRecognitionModel):
         self.conv2 = nn.Conv2d(n_channels * 3, n_channels, kernel_size=1, padding=1)
         self.attn_pool = AttentiveStatPooling(n_channels, n_channels // 10, conv=True)
         self.bn2 = nn.BatchNorm1d(n_channels * 2)
-        self.fc = nn.Linear(n_channels * 2, self.embeddings_dim)
+        self.embeddings = nn.Linear(n_channels * 2, self.embeddings_dim)
+        self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
 
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -957,7 +961,10 @@ class Var_ECAPA(SpeakerRecognitionModel):
         out = self.conv2(out)
         out = self.attn_pool(out)
         out = self.bn2(out)
-        out = self.fc(out)
+        out = self.embeddings(out)
+
+        if self.training:
+            out = self.clf(out)
     
         return out
 
@@ -970,7 +977,7 @@ class ResLSTM(nn.Module):
     ----------
         [1] Y. Zhang, W. Chan and N. Jaitly, "Very Deep 
         Convolutional Networks for End-to-End Speech 
-        Recognition," 2016, https://arxiv.org/abs/1610.03022
+        Recognition", 2016, https://arxiv.org/abs/1610.03022
     """
     def __init__(
         self, 
@@ -999,7 +1006,7 @@ class ResLSTM(nn.Module):
         return out + x
 
 
-class MHA_LAS(nn.Module):
+class MHA_LAS(SpeakerRecognitionModel):
     """Variant of the LAS model described in [1], with
     the encoder being extended according to the 
     Transformer architecture [2].
@@ -1007,7 +1014,7 @@ class MHA_LAS(nn.Module):
     References
     ----------
         [1] K. Irie et al., "On the Choice of Modeling 
-        Unit for Sequence-to-Sequence Speech Recognition,"
+        Unit for Sequence-to-Sequence Speech Recognition",
         Interspeech 2019, 2019.
 
         [2] A. Vaswani et al., "Attention Is All You Need,"
@@ -1015,18 +1022,17 @@ class MHA_LAS(nn.Module):
     """
     def __init__(
         self, 
-        embeddings_dim: int,
         n_channels: int = 32,
         n_mels: int = 80,
         num_heads: int = 8,
-        dropout: float = 0.2
+        dropout: float = 0.2,
+        **kwargs,
     ) -> None:
-        super(MHA_LAS, self).__init__()
+        super(MHA_LAS, self).__init__(**kwargs)
 
-        self.embeddings_dim = embeddings_dim
         self.n_channels = n_channels
         self.num_heads = num_heads
-        self.head_dim = embeddings_dim // num_heads
+        self.head_dim = self.embeddings_dim // num_heads
 
         self.conv1 = nn.Conv2d(1, n_channels, kernel_size=3, stride=2)
         self.gelu1 = nn.GELU()
@@ -1048,12 +1054,25 @@ class MHA_LAS(nn.Module):
         )
         self.norm1 = nn.LayerNorm(n_mels)
         self.dropout = nn.Dropout(dropout)
-        self.mlp = nn.Sequential(
+        self.embeddings = nn.Sequential(
             nn.Linear(n_mels * n_channels, self.embeddings_dim // 2),
             nn.Dropout(dropout),
             nn.ReLU(inplace=True),
             nn.Linear(self.embeddings_dim // 2, self.embeddings_dim)
         )
+
+        self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.conv1(x)
@@ -1078,6 +1097,341 @@ class MHA_LAS(nn.Module):
         batch_size, n_channels, n_mels = out.shape
         out = out.view(batch_size, n_channels * n_mels)
     
-        out = self.mlp(out)
+        out = self.embeddings(out)
+        if self.training:
+            out = self.clf(out)
 
+        return out
+
+
+class ConvSEBlock(nn.Module):
+    """Squeeze and excitation block using convolution."""
+    def __init__(
+        self,
+        n_channels: int,
+        reduction_ratio: int = 4 # 0.25 se_ratio in original
+    ) -> None:
+        super(ConvSEBlock, self).__init__()
+
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.se_reduce = nn.Conv2d(
+            n_channels, 
+            n_channels // reduction_ratio,
+            kernel_size=1,
+            stride=1,
+            padding="same",
+            bias=True
+        )
+        self.gelu = nn.GELU()
+        self.se_expand = nn.Conv2d(
+            n_channels // reduction_ratio, 
+            n_channels,
+            kernel_size=1,
+            stride=1,
+            padding="same",
+            bias=True
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.pool(x)
+        out = self.se_reduce(out)
+        out = self.gelu(out)
+        out = self.se_expand(out)
+        out = self.sigmoid(out)
+        return out * x
+
+
+class MBConvBlock(nn.Module):
+    """MBConv and Fused-MBConv block, as described in [1]
+    and [2].
+
+    References
+    ----------
+        [1] M. Tan and Q.V. Le, "EfficientNetV2: Smaller 
+        Models and Faster Training", 2021,
+        https://arxiv.org/abs/2104.00298 
+
+        [2] M. Sandler et al., "MobileNetV2: Inverted Residuals 
+        and Linear Bottlenecks", 2019, 
+        https://arxiv.org/abs/1801.04381
+    """
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        expand_ratio: int,
+        stride: int,
+        dropout_rate: float,
+        se_ratio: Optional[int],
+        fused: bool = False
+    ) -> None:
+        super(MBConvBlock, self).__init__()
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.expand_ratio = expand_ratio
+        self.stride = stride
+        self.se_ratio = se_ratio
+        self.fused = fused
+        self.hidden_dim = in_channels * expand_ratio
+
+        self.has_se = se_ratio is not None and \
+            0 < se_ratio <= 1
+
+        if fused and expand_ratio != 1:
+            self.expand = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=in_channels,
+                    out_channels=self.hidden_dim,
+                    kernel_size=kernel_size,
+                    stride=stride,
+                    padding=1 if stride > 1 else "same",
+                    bias=False
+                ),
+                nn.BatchNorm2d(self.hidden_dim),
+                nn.GELU(),
+            )
+        else:
+            if expand_ratio != 1:
+                self.expand = nn.Sequential(
+                    nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=self.hidden_dim,
+                        kernel_size=1,
+                        stride=1,
+                        padding="same",
+                        bias=False
+                    ),
+                    nn.BatchNorm2d(self.hidden_dim),
+                    nn.GELU()
+                )
+            self.depthwise = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=self.hidden_dim,
+                    out_channels=self.hidden_dim,
+                    kernel_size=kernel_size,
+                    stride=stride,
+                    padding=1 if stride > 1 else "same",
+                    groups=self.hidden_dim,
+                    bias=False
+                ),
+                nn.BatchNorm2d(self.hidden_dim),
+                nn.GELU()
+            )
+
+        self.dropout = nn.Dropout(dropout_rate)
+        if self.has_se:
+            self.se = ConvSEBlock(
+                n_channels=self.hidden_dim,
+                reduction_ratio=se_ratio
+            )
+        if fused:
+            f_stride = 1 if expand_ratio != 1 else stride
+            self.project_conv = nn.Conv2d(
+                in_channels=self.hidden_dim,
+                out_channels=out_channels,
+                kernel_size=1 if expand_ratio != 1 else kernel_size,
+                stride=f_stride,
+                padding=1 if f_stride > 1 else "same",
+                bias=False
+            )
+            self.gelu = nn.GELU()
+        else:
+            self.project_conv = nn.Conv2d(
+                in_channels=self.hidden_dim,
+                out_channels=out_channels,
+                kernel_size=1,
+                stride=1,
+                padding="same",
+                bias=False
+            )
+        self.norm2 = nn.BatchNorm2d(out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = x
+        if self.expand_ratio != 1:
+            out = self.expand(out)
+        if not self.fused:
+            out = self.depthwise(out)
+        if self.expand_ratio > 1:
+            out = self.dropout(out)
+        if self.has_se:
+            out = self.se(out)
+        out = self.project_conv(out)
+        out = self.norm2(out)
+
+        if self.fused and self.expand_ratio == 1:
+            out = self.gelu(out)
+
+        if self.stride == 1 and self.in_channels == self.out_channels:
+            out = out + x
+
+        return out
+
+
+def round_repeats(num_repeats, depth_coefficient):
+    return int(math.ceil(num_repeats * depth_coefficient))
+
+
+def round_channels(
+    n_channels, 
+    width_coefficient, 
+    depth_divisor,
+    min_depth = None
+):
+    if width_coefficient is None or width_coefficient == 1.0:
+        return n_channels
+
+    n_channels *= width_coefficient
+    min_depth = min_depth or depth_divisor
+    new_n_channels = max(
+        min_depth,
+        int(n_channels + depth_divisor / 2) // \
+            depth_divisor * depth_divisor    
+    )
+    return int(new_n_channels)
+
+
+class EfficientNetV2(SpeakerRecognitionModel):
+    """Implementation of EfficientNetV2, as described 
+    in [1]. The code is adapted from the official
+    TensorFlow repository at:
+        https://github.com/google/automl/blob/master/efficientnetv2
+
+    References
+    ----------
+        [1] M. Tan and Q.V. Le, "EfficientNetV2: Smaller 
+        Models and Faster Training", 2021,
+        https://arxiv.org/abs/2104.00298 
+    """
+    def __init__(
+        self,
+        config: dict,
+        stem_channels: int = 24
+    ) -> None:
+        super(EfficientNetV2, self).__init__()
+
+        dropout_rate = config["dropout_rate"]
+        self.stem_channels = stem_channels
+
+        stem_channels = round_channels(
+            n_channels=self.stem_channels,
+            width_coefficient=config["width_coefficient"],
+            depth_divisor=config["depth_coefficient"]
+        )
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(
+                in_channels=1,
+                out_channels=stem_channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                bias=False
+            ),
+            nn.BatchNorm2d(24),
+            nn.GELU()
+        )
+
+        block_ls = []
+
+        for block_config in config["blocks"]:
+            block_args = block_config["args"]
+
+            in_channels = round_channels(
+                n_channels=block_args["in_channels"],
+                width_coefficient=config["width_coefficient"],
+                depth_divisor=config["depth_divisor"]
+            )
+            out_channels = round_channels(
+                n_channels=block_args["out_channels"],
+                width_coefficient=config["width_coefficient"],
+                depth_divisor=config["depth_divisor"]
+            )
+            num_repeats = round_repeats(
+                num_repeats=block_config["num_repeats"],
+                depth_coefficient=config["depth_coefficient"]
+            )
+            block_args["in_channels"] = in_channels
+            block_args["out_channels"] = out_channels
+            block_config["num_repeats"] = num_repeats
+            head_in = out_channels
+    
+            block = MBConvBlock(
+                **block_args,
+                dropout_rate=dropout_rate 
+            )
+            block_ls.append(block)
+
+            if num_repeats > 1:
+                block_args["in_channels"] = \
+                    block_args["out_channels"]
+                block_args["stride"] = 1
+            
+            for _ in range(num_repeats - 1):
+                block = MBConvBlock(
+                    **block_args,
+                    dropout_rate=dropout_rate
+                )
+                block_ls.append(block)
+
+        self.middle = nn.Sequential(
+            *block_ls
+        )
+
+        head_out = round_channels(
+            n_channels=1280,
+            width_coefficient=config["width_coefficient"],
+            depth_divisor=config["depth_divisor"]
+        )
+
+        self.head = nn.Sequential(
+            nn.Conv2d(
+                in_channels=head_in,
+                out_channels=head_out,
+                kernel_size=1,
+                stride=1,
+                padding="same",
+                bias=False
+            ),
+            nn.BatchNorm2d(head_out),
+            nn.GELU(),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Dropout(dropout_rate)
+        )
+
+        self.embeddings = nn.Linear(head_out, self.embeddings_dim)
+        self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
+
+        self._initialize_weights()
+
+    def _initialize_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def summary(self) -> None:
+        for m in self.modules():
+            print(m)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        batch_size = x.shape[0]
+
+        out = self.stem(x)
+        out = self.middle(out)
+        out = self.head(out).view(batch_size, 1280)
+        out = self.embeddings(out)
+
+        if self.training:
+            out = self.clf(out)
+        
         return out
