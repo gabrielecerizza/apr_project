@@ -92,13 +92,13 @@ class AAMSoftmaxLoss(nn.Module):
         nn.init.xavier_normal_(self.weight, gain=1)
 
         self.easy_margin = easy_margin
-        self.cos_m = torch.cos(self.m)
-        self.sin_m = torch.sin(self.m)
+        self.cos_m = math.cos(self.m)
+        self.sin_m = math.sin(self.m)
 
         # make the function cos(theta+m) monotonic decreasing 
         # while theta in [0°,180°]
-        self.th = torch.cos(torch.pi - self.m)
-        self.mm = torch.sin(torch.pi - self.m) * self.m
+        self.th = math.cos(math.pi - self.m)
+        self.mm = math.sin(math.pi - self.m) * self.m
 
     def forward(self, x, label=None):
 
@@ -171,13 +171,13 @@ class SubCenterAAMSoftmaxLoss(nn.Module):
         nn.init.xavier_normal_(self.weight, gain=1)
 
         self.easy_margin = easy_margin
-        self.cos_m = torch.cos(self.m)
-        self.sin_m = torch.sin(self.m)
+        self.cos_m = math.cos(self.m)
+        self.sin_m = math.sin(self.m)
 
         # make the function cos(theta+m) monotonic decreasing 
         # while theta in [0°,180°]
-        self.th = torch.cos(torch.pi - self.m)
-        self.mm = torch.sin(torch.pi - self.m) * self.m
+        self.th = math.cos(math.pi - self.m)
+        self.mm = math.sin(math.pi - self.m) * self.m
 
     def forward(self, x, label=None):
         ls = []
@@ -190,7 +190,7 @@ class SubCenterAAMSoftmaxLoss(nn.Module):
 
         subclass_cosine = torch.stack(ls)
         max_pool = F.max_pool1d(subclass_cosine, self.num_subcenters)
-        theta = torch.arccos(max_pool)
+        theta = torch.arccos(max_pool).squeeze(-1)
         cos_theta, sin_theta = torch.cos(theta), torch.sin(theta)
         
         # cos(theta + m) = cos(theta)*cos(m) - sin(theta)*sin(m)

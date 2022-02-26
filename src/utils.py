@@ -1,6 +1,6 @@
 import os
+import random
 
-import librosa
 import matplotlib.pyplot as plt
 import pandas as pd
 import shutil, torch
@@ -24,30 +24,63 @@ def create_subset(
     num_speakers: int = 20,
     base_path: str = "E:/Datasets/VoxCeleb1/"
 ):
+    os.makedirs(base_path + "subset", exist_ok=True)
     
     # Get the official train, val, test splits
     ls = []
     with open(base_path + "iden_split.txt") as file:
+        
+        gender_df = pd.read_csv(base_path + "vox1_meta.csv", sep="\t")
+        m_ratio = gender_df["Gender"].value_counts(normalize=True)["m"]
+        f_ratio = gender_df["Gender"].value_counts(normalize=True)["f"]
+        n_males = int(num_speakers * m_ratio)
+        n_females = num_speakers - n_males
+        male_ids = random.sample(
+            list(
+                gender_df[gender_df["Gender"] == "m"]["VoxCeleb1 ID"].unique()
+            ),
+            n_males
+        )
+        female_ids = random.sample(
+            list(
+                gender_df[gender_df["Gender"] == "f"]["VoxCeleb1 ID"].unique()
+            ),
+            n_females
+        )
+        chosen_ids = male_ids + female_ids
+
         for line in file:
             set_num, audio_path = line.split()
             speaker_id = audio_path.split("/")[0]
-            ls.append((set_num, speaker_id, audio_path))
+            if speaker_id not in chosen_ids:
+                continue
+            gender = list(
+                gender_df[gender_df["VoxCeleb1 ID"] == speaker_id]["Gender"]
+            )[0]
+            ls.append((set_num, speaker_id, gender, audio_path))
 
-    df = pd.DataFrame(ls, columns =["Set", "Speaker", "File"])
+    df = pd.DataFrame(ls, columns =["Set", "Speaker", "Gender", "File"])
     df["Set"] = df["Set"].apply(
         lambda x: "train" if x == "1" else "val" if x == "2" else "test"
     )
-    speaker_ids = df["Speaker"].unique()
     
-    # Select a subset of speakers
-    rng = default_rng()
-    speaker_subset = rng.choice(speaker_ids, num_speakers)
-    sub_df = df[[spkr in speaker_subset for spkr in df["Speaker"]]]
-    
-    print(sub_df["Set"].value_counts())
-    sub_df.to_csv(base_path + "subset/subset.csv", index_label=False)
+    print(df["Set"].value_counts())
+    df.to_csv(base_path + "subset/subset.csv", index_label=False)
 
-    for index, row in sub_df.iterrows():
+    m_sampled_ratio = df.drop_duplicates("Speaker")["Gender"].value_counts(normalize=True)["m"]
+    f_sampled_ratio = df.drop_duplicates("Speaker")["Gender"].value_counts(normalize=True)["f"]
+
+    print(
+        f"Num speakers: {num_speakers}\n"
+        f"Male ratio in dataset: {m_ratio}\n"
+        f"Female ratio in dataset: {f_ratio}\n"
+        f"Male sampled ratio: {m_sampled_ratio}\n"
+        f"Female sampled ratio: {f_sampled_ratio}\n"
+        f"Num sampled males: {n_males}\n"
+        f"Num sampled females: {n_females}\n"
+    )
+
+    for index, row in df.iterrows():
         copy_audio(row, base_path)
 
 

@@ -43,13 +43,14 @@ class VoxCelebDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
+        filename = self.df.iloc[idx]["File"]
+        speaker_id = self.df.iloc[idx]["Speaker"]
+        
         features = torch.load(filename)
         if self.spec_augment and self.set_name == "train":
             features = self.freq_masking(features)
             features = self.time_masking(features)
 
-        filename = self.df.iloc[idx]["File"]
-        speaker_id = self.df.iloc[idx]["Speaker"]
         sample = {
             "features": features,
             "label": torch.tensor(self.label_dict[speaker_id]),
