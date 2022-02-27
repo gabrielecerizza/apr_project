@@ -678,6 +678,74 @@ def conv3x3(
     )
 
 
+class SelfAttentionPooling(nn.Module):
+    """Implementation of Self Attention Pooling (SAP) as
+    described in [1]. We used GELU instead of tanh as
+    non-linearity.
+
+    References
+    ----------
+        [1] W. Cai, J. Chen and M. Li, "Exploring the Encoding 
+        Layer and Loss Function in End-to-End Speaker and 
+        Language Recognition System", 2018,
+        https://arxiv.org/abs/1804.05160
+    """
+    def __init__(
+        self,
+        n_mels
+    ) -> None:
+        super(SelfAttentionPooling, self).__init__()
+        self.linear = nn.Linear(n_mels, n_mels)
+        self.attention = nn.Parameter(
+            torch.FloatTensor(size=(n_mels, 1))
+        )
+        self.gelu = nn.GELU()
+        self.softmax = nn.Softmax2d()
+
+        nn.init.xavier_normal_(self.attention)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = x.permute(0,3,1,2)
+        h = self.gelu(self.linear(y))
+        mul = torch.matmul(h, self.attention)
+        w = self.softmax(mul)
+        w = w.permute(0,2,3,1)
+        e = torch.sum(x * w, dim=-1)
+        
+        return e
+
+
+class VarSelfAttentionPooling(nn.Module):
+    """Variant of self-attention pooling to further
+    decrease the number of dimensions. We perform
+    a weighted sum of the n_mels this time, so we
+    can remove the last dimension.
+    """
+    def __init__(
+        self,
+        n_channels,
+        n_mels
+    ) -> None:
+        super(VarSelfAttentionPooling, self).__init__()
+        self.linear = nn.Linear(n_channels, n_channels)
+        self.attention = nn.Parameter(
+            torch.FloatTensor(size=(n_channels, n_mels))
+        )
+        self.gelu = nn.GELU()
+        self.softmax = nn.Softmax2d()
+
+        nn.init.xavier_normal_(self.attention)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = x.permute(0,2,1)
+        h = self.gelu(self.linear(y))
+        mul = torch.matmul(h, self.attention)
+        w = self.softmax(mul)
+        e = torch.sum(x.bmm(w), dim=-1)
+        
+        return e
+
+
 class ResNetBlock(nn.Module):
     def __init__(
         self,
@@ -747,7 +815,9 @@ class ResNet34(SpeakerRecognitionModel):
         self.conv3_x = self._make_sequence(128, num_blocks=4, stride=2)
         self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool1 = SelfAttentionPooling(3)
+        self.pool2 = VarSelfAttentionPooling(512, 3)
         # self.sp = StatsPoolingLayer()
         self.embeddings = nn.Linear(512, self.embeddings_dim)
         # self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
@@ -774,8 +844,9 @@ class ResNet34(SpeakerRecognitionModel):
         x = self.conv4_x(x)
         x = self.conv5_x(x)
 
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
+        x = self.pool1(x)
+        x = self.pool2(x)
+        # x = torch.flatten(x, 1)
         # x = self.sp(x)
         x = self.embeddings(x)
 
@@ -1152,7 +1223,7 @@ class MHA_LAS(SpeakerRecognitionModel):
         self.norm1 = nn.LayerNorm(n_mels)
         self.dropout = nn.Dropout(dropout)
         self.embeddings = nn.Sequential(
-            nn.Linear(n_mels * n_channels, self.embeddings_dim // 2),
+            nn.Linear(n_channels * n_mels, self.embeddings_dim // 2),
             nn.Dropout(dropout),
             nn.ReLU(inplace=True),
             nn.Linear(self.embeddings_dim // 2, self.embeddings_dim)
@@ -1178,6 +1249,7 @@ class MHA_LAS(SpeakerRecognitionModel):
         out = self.conv2(out)
         out = self.gelu2(out)
         out = self.bn2(out)
+
         out = self.avg1(out).squeeze(-1)
         out = self.reslstm1(out)
         out = self.reslstm2(out)
@@ -1526,7 +1598,9 @@ class EfficientNetV2(SpeakerRecognitionModel):
 
         out = self.stem(x)
         out = self.middle(out)
-        out = self.head(out).view(batch_size, 1280)
+        out = self.head(out)
+
+        out = out.view(batch_size, 1280)
         out = self.embeddings(out)
 
         #if self.training:
