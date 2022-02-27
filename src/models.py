@@ -64,6 +64,26 @@ class SpeakerRecognitionModel(LightningModule):
             average=self.average
         )
 
+        self._set_optimizers()
+
+    def _set_optimizers(self):
+        if self.optimizer is None:
+            self.optimizer = torch.optim.AdamW(
+                self.parameters(), 
+                lr=1e-5, 
+                eps=1e-8,
+                weight_decay=0.05
+            )
+        if self.lr_scheduler is None:
+            self.lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
+                optimizer=self.optimizer,
+                base_lr=1e-6,
+                max_lr=1e-4,
+                step_size_up=5000,
+                cycle_momentum=False,
+                mode="triangular2"
+            )
+
     def create_embeddings(self):
         embeddings_ls = []
 
@@ -252,9 +272,21 @@ class SpeakerRecognitionModel(LightningModule):
         loss, logits = self.loss_func(out, true_labels)
 
         train_acc = self.acc(logits, true_labels)
+        train_f1 = self.f1(logits, true_labels)
 
-        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
-        self.log("train_acc", train_acc, prog_bar=True, on_step=True, on_epoch=True)
+        metrics_ls = [
+            ("train_loss", loss),
+            ("train_acc", train_acc), 
+            ("train_f1", train_f1)
+        ]
+        for metric_name, metric_val in metrics_ls:
+            self.log(
+                metric_name, 
+                metric_val,
+                prog_bar=True,
+                on_step=True, 
+                on_epoch=True
+            )
 
         return loss
 
@@ -270,6 +302,7 @@ class SpeakerRecognitionModel(LightningModule):
         batch["embeddings"] = out
 
         val_acc = self.acc(logits, true_labels)
+        val_f1 = self.f1(logits, true_labels)
 
         scores, labels = self.compute_scores(
             batch,
@@ -287,6 +320,7 @@ class SpeakerRecognitionModel(LightningModule):
         metrics_ls = [
             ("val_loss", loss),
             ("val_acc", val_acc), 
+            ("val_f1", val_f1), 
             ("val_min_dcf", val_min_dcf),
             ("val_eer", val_eer)
         ]
@@ -326,8 +360,8 @@ class SpeakerRecognitionModel(LightningModule):
         val_eer = compute_eer(scores.numpy(), labels.numpy())
 
         metrics_ls = [ 
-            ("val_min_dcf", val_min_dcf),
-            ("val_eer", val_eer)
+            ("val_min_dcf_epoch", val_min_dcf),
+            ("val_eer_epoch", val_eer)
         ]
         for metric_name, metric_val in metrics_ls:
             self.log(
@@ -343,9 +377,6 @@ class SpeakerRecognitionModel(LightningModule):
             "scores": scores.numpy().tolist(),
             "labels": labels.numpy().tolist()
         }
-
-        self.log("val_min_dcf_epoch", val_min_dcf.numpy().tolist(), prog_bar=True)
-        self.log("val_eer_epoch", val_eer, prog_bar=True)
 
         with open(
             f"{save_dir}/{model_name}_epoch={self.current_epoch}.json", 
@@ -363,7 +394,11 @@ class SpeakerRecognitionModel(LightningModule):
     def test_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
         out = self(x)
+        loss, logits = self.loss_func(out, true_labels)
         batch["embeddings"] = out
+
+        test_acc = self.acc(logits, true_labels)
+        test_f1 = self.f1(logits, true_labels)
 
         scores, labels = self.compute_scores(
             batch,
@@ -378,7 +413,9 @@ class SpeakerRecognitionModel(LightningModule):
         )
         test_eer = compute_eer(scores.numpy(), labels.numpy())
 
-        metrics_ls = [ 
+        metrics_ls = [
+            ("test_acc", test_acc),
+            ("test_f1", test_f1), 
             ("test_min_dcf", test_min_dcf),
             ("test_eer", test_eer)
         ]
@@ -418,17 +455,22 @@ class SpeakerRecognitionModel(LightningModule):
         eer = compute_eer(scores.numpy(), labels.numpy())
 
         res = {
-            "min_dcf": min_dcf,
-            "eer": eer,
             "model_name": model_name,
+            "acc": float(self.acc.compute().cpu().numpy()),
+            "f1": float(self.f1.compute().cpu().numpy()),
+            "min_dcf": float(min_dcf),
+            "eer": float(eer),
             "embeddings_dim": self.embeddings_dim,
-            "loss": self.loss_func.__class__.__name__,
-            "loss_margin": self.loss_margin,
-            "loss_scale": self.loss_scale,
+            "loss": str(self.loss_func),
+            "optimizer": str(self.optimizer),
+            "lr_scheduler": str(self.lr_scheduler),
+            "lr_scheduler_interval": self.lr_scheduler_interval,
             "average": self.average,
             "num_secs": self.num_secs,
             "feature_type": self.feature_type,
             "embeddings_strategy": self.embeddings_strategy,
+            "cohort_strategy": self.cohort_strategy,
+            "normalization_strategy": self.normalization_strategy,
             "top_n": self.top_n
         }
 
@@ -439,22 +481,6 @@ class SpeakerRecognitionModel(LightningModule):
             json.dump(res, f, indent=4)
 
     def configure_optimizers(self):
-        if self.optimizer is None:
-            self.optimizer = torch.optim.AdamW(
-                self.parameters(), 
-                lr=1e-5, 
-                eps=1e-8,
-                weight_decay=0.05
-            )
-        if self.lr_scheduler is None:
-            self.lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
-                optimizer=self.optimizer,
-                base_lr=1e-6,
-                max_lr=1e-4,
-                step_size_up=5000,
-                cycle_momentum=False,
-                mode="triangular2"
-            )
         return {
             "optimizer": self.optimizer,
             "lr_scheduler": {
