@@ -173,47 +173,50 @@ def create_features_from_row(
     filename = os.path.splitext(os.path.basename(wav_path))[0]
     waveform, sample_rate = torchaudio.load(wav_path)
 
+    ls = []
     for augment in [
-            "none", "speed", "noise", 
-            "reverb", "babble"
-        ]:
-            filename_aug = ""
+        "none", "speed", "noise", 
+        "reverb", "babble"
+    ]:
+        filename_aug = ""
 
-            if row["Set"] != "train" and augment != "none":
-                continue
+        if row["Set"] != "train" and augment != "none":
+            continue
 
-            if augment == "speed":
-                waveform = rsc(waveform)   
-                filename_aug = "spd"
-            elif augment == "noise":
-                waveform = rbn(waveform)
-                filename_aug = "ns"
-            elif augment == "reverb":
-                waveform = torch.tensor(reverb(waveform))
-                filename_aug = "rvrb"
-            elif augment == "babble":
-                waveform = babble(waveform)
-                filename_aug = "bbl"
+        if augment == "speed":
+            waveform = rsc(waveform)   
+            filename_aug = "spd"
+        elif augment == "noise":
+            waveform = rbn(waveform)
+            filename_aug = "ns"
+        elif augment == "reverb":
+            waveform = torch.tensor(reverb(waveform))
+            filename_aug = "rvrb"
+        elif augment == "babble":
+            waveform = babble(waveform)
+            filename_aug = "bbl"
 
-            waveform = random_clip(waveform)
-            seconds = librosa.get_duration(waveform[0], sr=sample_rate)
+        waveform = random_clip(waveform)
+        seconds = librosa.get_duration(waveform[0], sr=sample_rate)
 
-            save_path = f"E:/Datasets/VoxCeleb1/subset/features_{clip_secs}/" \
-                + row["Set"] + "/" + row["File"]
-            save_dir = os.path.dirname(save_path)
+        save_path = f"E:/Datasets/VoxCeleb1/subset/features_{clip_secs}/" \
+            + row["Set"] + "/" + row["File"]
+        save_dir = os.path.dirname(save_path)
 
-            melspec = extract_logmel(
-                waveform=waveform, 
-                sample_rate=sample_rate, 
-                n_mels=n_mels
-            )
+        melspec = extract_logmel(
+            waveform=waveform, 
+            sample_rate=sample_rate, 
+            n_mels=n_mels
+        )
 
-            melspec_filename = save_dir + "/" + filename \
-                + "_" + filename_aug + ".pt"
-            melspec_dir = os.path.dirname(melspec_filename)
-            os.makedirs(melspec_dir, exist_ok=True)
-            torch.save(melspec, melspec_filename)
-            return (
+        melspec_filename = save_dir + "/" + filename \
+            + "_" + filename_aug + ".pt"
+        melspec_dir = os.path.dirname(melspec_filename)
+        os.makedirs(melspec_dir, exist_ok=True)
+        torch.save(melspec, melspec_filename)
+    
+        ls.append(
+            (
                 row["Set"], 
                 row["Speaker"], 
                 "logmel", 
@@ -222,7 +225,9 @@ def create_features_from_row(
                 os.path.dirname(row["File"]),
                 melspec_filename
             )
+        )
 
+    return ls
 
 
 def create_dataset(
@@ -308,7 +313,7 @@ def create_dataset(
         leave=False
     ):
         # copy_audio(row, base_path)
-        feat_out = create_features_from_row(
+        feat_ls = create_features_from_row(
             row=row, 
             base_path=base_path,
             rsc=rsc,
@@ -319,7 +324,7 @@ def create_dataset(
             clip_secs=clip_secs,
             n_mels=n_mels
         )
-        ls.append(feat_out)
+        ls.extend(feat_ls)
 
     df = pd.DataFrame(
         ls, 

@@ -4,7 +4,23 @@ import torch.nn.functional as F
 from torch import nn
 
 
-class ArcFaceLoss(torch.nn.Module):
+class SoftmaxLoss(nn.Module):
+    def __init__(
+        self, 
+        embeddings_dim: int = 512, 
+        num_classes: int = 5
+    ) -> None:
+        super(SoftmaxLoss, self).__init__()
+        self.clf = nn.Linear(embeddings_dim, num_classes)
+        self.ce = nn.CrossEntropyLoss()
+
+    def forward(self, x: torch.Tensor, label=None) -> torch.Tensor:
+        logits = self.clf(x)
+        loss = self.ce(logits, label)
+        return loss, logits
+
+
+class ArcFaceLoss(nn.Module):
     """Implementation of ArcFace Loss, also called
     Additive Angular Margin Softmax (AAM Softmax), as
     described in [1].

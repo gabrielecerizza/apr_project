@@ -3,7 +3,7 @@ from itertools import cycle
 import json
 import math
 import os
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import pandas as pd
 import torch
@@ -25,8 +25,8 @@ class SpeakerRecognitionModel(LightningModule):
         num_classes: int,
         embeddings_dim: int = 512,
         loss_func: Callable = None,
-        optimizer: Callable = None,
-        lr_scheduler: Callable = None,
+        optimizer: Union[Callable, str] = "AdamW",
+        lr_scheduler: Union[Callable, str] = None,
         lr_scheduler_interval: str = "step",
         average: str = "weighted",
         num_secs: int = 3,
@@ -67,22 +67,54 @@ class SpeakerRecognitionModel(LightningModule):
         self._set_optimizers()
 
     def _set_optimizers(self):
-        if self.optimizer is None:
+        if self.optimizer == "RMSprop":
+            self.optimizer = torch.optim.RMSprop(
+                self.parameters(),
+                lr=0.256,
+                momentum=0.9,
+                weight_decay=0.99
+            )
+        elif self.optimizer == "NAdam":
+            self.optimizer = torch.optim.NAdam(
+                self.parameters()
+            )
+        elif self.optimizer is None or self.optimizer == "AdamW":
             self.optimizer = torch.optim.AdamW(
                 self.parameters(), 
-                lr=1e-5, 
-                eps=1e-8,
-                weight_decay=0.05
+                lr=1e-3, 
+                eps=1e-8
             )
-        if self.lr_scheduler is None:
+        if self.lr_scheduler == "StepLR":
+            self.lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                self.optimizer,
+                gamma=0.97,
+                step_size=2
+            )
+        elif self.lr_scheduler == "CyclicLR":
             self.lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
                 optimizer=self.optimizer,
-                base_lr=1e-6,
-                max_lr=1e-4,
+                base_lr=1e-5,
+                max_lr=1e-2,
                 step_size_up=5000,
                 cycle_momentum=False,
                 mode="triangular2"
             )
+        elif self.lr_scheduler == "ReducePlateau":
+            self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                patience=2
+            )
+        
+
+    def set_optimizer(
+        self, 
+        optimizer, 
+        lr_scheduler, 
+        lr_scheduler_interval
+    ):
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.lr_scheduler_interval = lr_scheduler_interval
 
     def create_embeddings(self):
         embeddings_ls = []
@@ -91,7 +123,11 @@ class SpeakerRecognitionModel(LightningModule):
             self.base_path + f"subset_features_{self.num_secs}.csv"
         )
         df = df[df["Type"] == self.feature_type]
-        for index, row in df.iterrows():
+        for index, row in tqdm(
+            df.iterrows(),
+            total=len(df),
+            desc="Creating embeddings"
+        ):
             # We compute embeddings only for
             # the original files
             if row["Augment"] != "none":
@@ -201,7 +237,11 @@ class SpeakerRecognitionModel(LightningModule):
         else:
             raise ValueError("unknown strategy in compute_scores")
 
-        for speaker, embeddings_ls in speaker_embeddings_dict.items():
+        for speaker, embeddings_ls in tqdm(
+            speaker_embeddings_dict.items(),
+            total=len(speaker_embeddings_dict),
+            desc="Computing scores"
+        ):
             for embedding in embeddings_ls:
                 e_distances = torch_cosine_distances(
                     embedding.unsqueeze(0), cohort
@@ -290,11 +330,6 @@ class SpeakerRecognitionModel(LightningModule):
 
         return loss
 
-    def on_validation_epoch_start(self) -> None:
-        self.create_embeddings()
-
-        return super().on_validation_epoch_start()
-
     def validation_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
         out = self(x)
@@ -304,6 +339,7 @@ class SpeakerRecognitionModel(LightningModule):
         val_acc = self.acc(logits, true_labels)
         val_f1 = self.f1(logits, true_labels)
 
+        """
         scores, labels = self.compute_scores(
             batch,
             cohort_strategy=self.cohort_strategy,
@@ -316,13 +352,14 @@ class SpeakerRecognitionModel(LightningModule):
             thresholds=thresholds
         )
         val_eer = compute_eer(scores.numpy(), labels.numpy())
+        """
 
         metrics_ls = [
             ("val_loss", loss),
             ("val_acc", val_acc), 
             ("val_f1", val_f1), 
-            ("val_min_dcf", val_min_dcf),
-            ("val_eer", val_eer)
+            # ("val_min_dcf", val_min_dcf),
+            # ("val_eer", val_eer)
         ]
         for metric_name, metric_val in metrics_ls:
             self.log(
@@ -333,58 +370,7 @@ class SpeakerRecognitionModel(LightningModule):
                 on_epoch=True
             )
 
-        return scores, labels
-
-    def validation_epoch_end(self, outputs) -> None:
-        model_name = self.__class__.__name__.lower()
-        save_dir = "val_results/"
-        os.makedirs(save_dir, exist_ok=True)
-
-        scores, labels = [], []
-
-        for tup in outputs:
-            scores.extend(tup[0])
-            labels.extend(tup[1])
-
-        scores = torch.tensor(scores)
-        labels = torch.tensor(labels)
-
-        fnrs, fprs, thresholds = compute_error_rates(
-            scores, labels
-        )
-        val_min_dcf, _ = compute_min_dcf(
-            fnrs=fnrs, 
-            fprs=fprs, 
-            thresholds=thresholds
-        )
-        val_eer = compute_eer(scores.numpy(), labels.numpy())
-
-        metrics_ls = [ 
-            ("val_min_dcf_epoch", val_min_dcf),
-            ("val_eer_epoch", val_eer)
-        ]
-        for metric_name, metric_val in metrics_ls:
-            self.log(
-                metric_name, 
-                metric_val, 
-                prog_bar=True,
-                on_epoch=True
-            )
-
-        res = {
-            "min_dcf": val_min_dcf.numpy().tolist(),
-            "eer": val_eer,
-            "scores": scores.numpy().tolist(),
-            "labels": labels.numpy().tolist()
-        }
-
-        with open(
-            f"{save_dir}/{model_name}_epoch={self.current_epoch}.json", 
-            "w", encoding="utf-8"
-        ) as f:
-            json.dump(res, f, indent=4)
-
-        return super().validation_epoch_end(outputs)
+        return loss
 
     def on_test_epoch_start(self) -> None:
         self.create_embeddings()
@@ -481,14 +467,16 @@ class SpeakerRecognitionModel(LightningModule):
             json.dump(res, f, indent=4)
 
     def configure_optimizers(self):
-        return {
-            "optimizer": self.optimizer,
-            "lr_scheduler": {
+        res = dict()
+        res["optimizer"] = self.optimizer
+
+        if self.lr_scheduler is not None:
+            res["lr_scheduler"] = {
                 "scheduler": self.lr_scheduler,
                 "interval": self.lr_scheduler_interval,
                 "monitor": "val_loss"
             }
-        }
+        return res
 
     @property
     def num_training_steps(self) -> int:
@@ -841,9 +829,9 @@ class ResNet34(SpeakerRecognitionModel):
         self.conv3_x = self._make_sequence(128, num_blocks=4, stride=2)
         self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
-        # self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.pool1 = SelfAttentionPooling(3)
-        self.pool2 = VarSelfAttentionPooling(512, 3)
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        # self.pool1 = SelfAttentionPooling(3)
+        # self.pool2 = VarSelfAttentionPooling(512, 3)
         # self.sp = StatsPoolingLayer()
         self.embeddings = nn.Linear(512, self.embeddings_dim)
         # self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
@@ -870,9 +858,10 @@ class ResNet34(SpeakerRecognitionModel):
         x = self.conv4_x(x)
         x = self.conv5_x(x)
 
-        x = self.pool1(x)
-        x = self.pool2(x)
-        # x = torch.flatten(x, 1)
+        # x = self.pool1(x)
+        # x = self.pool2(x)
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
         # x = self.sp(x)
         x = self.embeddings(x)
 
@@ -1730,11 +1719,16 @@ efficientnetv2_config = {
 }
 
 def build_efficientnetv2(
-    embeddings_dim, num_classes, loss_func
+    embeddings_dim, num_classes, loss_func,
+    optimizer=None, lr_scheduler=None,
+    lr_scheduler_interval=None
 ) -> EfficientNetV2:
     return EfficientNetV2(
         config=efficientnetv2_config,
         embeddings_dim=embeddings_dim,
         num_classes=num_classes,
-        loss_func=loss_func
+        loss_func=loss_func,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        lr_scheduler_interval=lr_scheduler_interval
     )
