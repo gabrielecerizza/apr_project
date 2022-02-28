@@ -120,7 +120,14 @@ class MeanNormalizer:
         return (tensor - mean) / std
 
 
-def extract_logmel(waveform, sample_rate, n_mels):
+def extract_logmel(
+    waveform, 
+    sample_rate,
+    n_mels,
+    power = 1.0, # 1 for energy, 2 for power
+    to_db_flag = True,
+    cmn_flag = True
+):
     # With sample rate 16000 Hz, 1/16000 * 400 = 0.025
     # so n_fft = 400 yields windows of 25 ms
     n_fft = 400 
@@ -135,7 +142,7 @@ def extract_logmel(waveform, sample_rate, n_mels):
         hop_length=hop_length,
         center=True,
         pad_mode="reflect",
-        power=1.0, # energy instead of power
+        power=power, # energy instead of power
         norm="slaney",
         onesided=True,
         n_mels=n_mels,
@@ -144,7 +151,11 @@ def extract_logmel(waveform, sample_rate, n_mels):
     cmn = T.SlidingWindowCmn(cmn_window=n_fft)
     to_db = T.AmplitudeToDB(stype="amplitude")
 
-    melspec = cmn(to_db(mel_spectrogram(waveform)))
+    melspec = mel_spectrogram(waveform)
+    if to_db_flag:
+        melspec = to_db(melspec)
+    if cmn_flag:
+        melspec = cmn(melspec)
     return melspec
 
 
@@ -164,7 +175,10 @@ def copy_audio(row, base_path):
 def create_features_from_row(
     row, base_path, rsc, 
     rbn, reverb, babble, random_clip,
-    clip_secs, n_mels
+    clip_secs, n_mels,
+    power = 1.0, # 1 for energy, 2 for power
+    to_db_flag = True,
+    cmn_flag = True
 ):
     audio_path = row["File"]
     wav_path = base_path + "vox1_dev/" + audio_path
@@ -206,7 +220,10 @@ def create_features_from_row(
         melspec = extract_logmel(
             waveform=waveform, 
             sample_rate=sample_rate, 
-            n_mels=n_mels
+            n_mels=n_mels,
+            power=power,
+            to_db_flag=to_db_flag,
+            cmn_flag=cmn_flag
         )
 
         melspec_filename = save_dir + "/" + filename \
@@ -234,7 +251,10 @@ def create_dataset(
     num_speakers: int = 20,
     base_path: str = "E:/Datasets/VoxCeleb1/",
     clip_secs: int = 3,
-    n_mels: int = 80
+    n_mels: int = 80,
+    power = 1.0, # 1 for energy, 2 for power
+    to_db_flag = True,
+    cmn_flag = True
 ):
     random_clip = RandomClip(clip_secs=clip_secs)
     rsc = RandomSpeedChange()
@@ -322,7 +342,10 @@ def create_dataset(
             babble=babble,
             random_clip=random_clip,
             clip_secs=clip_secs,
-            n_mels=n_mels
+            n_mels=n_mels,
+            power=power,
+            to_db_flag=to_db_flag,
+            cmn_flag=cmn_flag
         )
         ls.extend(feat_ls)
 

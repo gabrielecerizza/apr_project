@@ -50,8 +50,8 @@ class VoxCelebDataset(Dataset):
         else:
             self.data = None
 
-        self.freq_masking = T.FrequencyMasking(freq_mask_param=30)
-        self.time_masking = T.TimeMasking(time_mask_param=80)
+        self.freq_masking = T.FrequencyMasking(freq_mask_param=10)
+        self.time_masking = T.TimeMasking(time_mask_param=5)
 
     def __len__(self):
         return len(self.df)

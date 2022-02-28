@@ -64,7 +64,7 @@ class SpeakerRecognitionModel(LightningModule):
             average=self.average
         )
 
-        self._set_optimizers()
+        # self._set_optimizers()
 
     def _set_optimizers(self):
         if self.optimizer == "RMSprop":
@@ -73,6 +73,12 @@ class SpeakerRecognitionModel(LightningModule):
                 lr=0.256,
                 momentum=0.9,
                 weight_decay=0.99
+            )
+        elif self.optimizer == "Adam":
+            self.optimizer = torch.optim.NAdam(
+                self.parameters(),
+                lr=0.001,
+                weight_decay=0
             )
         elif self.optimizer == "NAdam":
             self.optimizer = torch.optim.NAdam(
@@ -829,9 +835,9 @@ class ResNet34(SpeakerRecognitionModel):
         self.conv3_x = self._make_sequence(128, num_blocks=4, stride=2)
         self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        # self.pool1 = SelfAttentionPooling(3)
-        # self.pool2 = VarSelfAttentionPooling(512, 3)
+        # self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool1 = SelfAttentionPooling(3)
+        self.pool2 = VarSelfAttentionPooling(512, 3)
         # self.sp = StatsPoolingLayer()
         self.embeddings = nn.Linear(512, self.embeddings_dim)
         # self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
@@ -847,6 +853,8 @@ class ResNet34(SpeakerRecognitionModel):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
+        self._set_optimizers()
+
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv1(x)
         x = self.bn1(x)
@@ -858,10 +866,10 @@ class ResNet34(SpeakerRecognitionModel):
         x = self.conv4_x(x)
         x = self.conv5_x(x)
 
-        # x = self.pool1(x)
-        # x = self.pool2(x)
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
+        x = self.pool1(x)
+        x = self.pool2(x)
+        # x = self.pool(x)
+        # x = torch.flatten(x, 1)
         # x = self.sp(x)
         x = self.embeddings(x)
 
@@ -1247,6 +1255,7 @@ class MHA_LAS(SpeakerRecognitionModel):
         self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
 
         self._initialize_weights()
+        self._set_optimizers()
 
     def _initialize_weights(self):
         for m in self.modules():
@@ -1592,6 +1601,7 @@ class EfficientNetV2(SpeakerRecognitionModel):
         self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
 
         self._initialize_weights()
+        self._set_optimizers()
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
