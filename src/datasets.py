@@ -147,11 +147,13 @@ class VoxCelebDataModule(LightningDataModule):
         # Assign train/val datasets for use in dataloaders
         if stage == "fit" or stage is None:
             self.vox_train = VoxCelebDataset(
+                csv_base_path=self.data_dir + "subset/",
                 set_name="train",
                 spec_augment=self.spec_augment,
                 from_memory=self.from_memory
             )
             self.vox_val = VoxCelebDataset(
+                csv_base_path=self.data_dir + "subset/",
                 set_name="val",
                 spec_augment=self.spec_augment,
                 from_memory=self.from_memory
@@ -160,6 +162,7 @@ class VoxCelebDataModule(LightningDataModule):
         # Assign test dataset for use in dataloader(s)
         if stage == "test" or stage is None:
             self.vox_test = VoxCelebDataset(
+                csv_base_path=self.data_dir + "subset/",
                 set_name="test",
                 spec_augment=self.spec_augment,
                 from_memory=self.from_memory
@@ -172,7 +175,7 @@ class VoxCelebDataModule(LightningDataModule):
             pin_memory=self.pin_memory,
             num_workers=self.num_workers,
             shuffle=True,
-            collate_fn=collate_vox
+            # collate_fn=collate_vox
         )
 
     def val_dataloader(self):
@@ -181,7 +184,7 @@ class VoxCelebDataModule(LightningDataModule):
             batch_size=self.batch_size,
             pin_memory=self.pin_memory,
             num_workers=self.num_workers,
-            collate_fn=collate_vox
+            # collate_fn=collate_vox
         )
 
     def test_dataloader(self):
@@ -190,5 +193,5 @@ class VoxCelebDataModule(LightningDataModule):
             batch_size=self.batch_size,
             pin_memory=self.pin_memory,
             num_workers=self.num_workers,
-            collate_fn=collate_vox
+            # collate_fn=collate_vox
         )

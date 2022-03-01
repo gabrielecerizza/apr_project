@@ -46,7 +46,7 @@ class RandomSpeedChange:
         speed_factor = random.choice([0.9, 1.1])
 
         transformed_audio = librosa.effects.time_stretch(
-            audio_data, speed_factor
+            y=audio_data, rate=speed_factor
         )
         return torch.tensor(np.array([transformed_audio]))
 
@@ -86,8 +86,12 @@ class RandomBackgroundNoise:
     def __call__(self, audio_data):
         random_noise_file = random.choice(self.noise_files_list)
         noise, noise_sr = torchaudio.load(random_noise_file)
-        noise = librosa.resample(noise[0].numpy(), noise_sr, self.sample_rate)
-        noise = torch.tensor(librosa.to_mono(noise))
+        noise = librosa.resample(
+            y=noise[0].numpy(), 
+            orig_sr=noise_sr, 
+            target_sr=self.sample_rate
+        )
+        noise = torch.tensor(librosa.to_mono(y=noise))
         audio_length = audio_data.shape[-1]
         noise_length = noise.shape[-1]
         if noise_length > audio_length:
@@ -204,16 +208,23 @@ def create_features_from_row(
             waveform = rbn(waveform)
             filename_aug = "ns"
         elif augment == "reverb":
-            waveform = torch.tensor(reverb(waveform))
+            waveform = torch.tensor(
+                reverb(
+                    waveform,
+                    sample_rate=16000
+                )
+            )
             filename_aug = "rvrb"
         elif augment == "babble":
             waveform = babble(waveform)
             filename_aug = "bbl"
 
         waveform = random_clip(waveform)
-        seconds = librosa.get_duration(waveform[0], sr=sample_rate)
+        seconds = librosa.get_duration(
+            y=waveform[0], sr=sample_rate
+        )
 
-        save_path = f"E:/Datasets/VoxCeleb1/subset/features_{clip_secs}/" \
+        save_path = base_path + f"subset/features_{clip_secs}/" \
             + row["Set"] + "/" + row["File"]
         save_dir = os.path.dirname(save_path)
 
@@ -250,21 +261,25 @@ def create_features_from_row(
 def create_dataset(
     num_speakers: int = 20,
     base_path: str = "E:/Datasets/VoxCeleb1/",
+    noise_dir: str = "E:/Datasets/Musan/noise",
+    babble_dir: str = "E:/Datasets/Musan/speech",
     clip_secs: int = 3,
     n_mels: int = 80,
-    power = 1.0, # 1 for energy, 2 for power
-    to_db_flag = True,
-    cmn_flag = True
+    power: float = 1.0, # 1 for energy, 2 for power
+    to_db_flag: bool = True,
+    cmn_flag: bool = True
 ):
     random_clip = RandomClip(clip_secs=clip_secs)
     rsc = RandomSpeedChange()
-    rbn = RandomBackgroundNoise()
+    rbn = RandomBackgroundNoise(
+        noise_dir=noise_dir
+    )
     reverb = Pedalboard(
         [Reverb(room_size=0.75)], 
-        sample_rate=16000
+        # sample_rate=16000
     )
     babble = RandomBackgroundNoise(
-        noise_dir="E:/Datasets/Musan/speech",
+        noise_dir=babble_dir,
         min_snr_db=15, 
         max_snr_db=20
     )
