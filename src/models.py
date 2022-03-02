@@ -1026,14 +1026,16 @@ class ResNet34SE(SpeakerRecognitionModel):
         super(ResNet34SE, self).__init__(**kwargs)
 
         self.current_channels = 64
+        num_heads = 8
+        dropout = 0.3
 
         self.instancenorm   = nn.InstanceNorm2d(n_mels)
         self.conv1 = nn.Conv2d(
             1, 
             self.current_channels, 
-            kernel_size=3,
-            stride=1,
-            padding=1,
+            kernel_size=7,
+            stride=2,
+            padding=3,
             bias=False
         )
         self.bn1 = nn.BatchNorm2d(self.current_channels)
@@ -1049,18 +1051,30 @@ class ResNet34SE(SpeakerRecognitionModel):
         # self.sp = StatsPoolingLayer()
 
         """
-        outmap_size = int(n_mels/4)
+        outmap_size = int(n_mels/8)
 
         self.attention = nn.Sequential(
-            nn.Conv1d(512 * outmap_size, 128, kernel_size=1),
+            nn.Conv1d(256 * outmap_size, 128, kernel_size=1),
             nn.ReLU(),
             nn.BatchNorm1d(128),
-            nn.Conv1d(128, 512 * outmap_size, kernel_size=1),
+            nn.Conv1d(128, 256 * outmap_size, kernel_size=1),
             nn.Softmax(dim=2),
         )
-        """
+        
+        self.mha_dim = int(self.current_channels / 32)
 
-        self.embeddings = nn.Linear(512, self.embeddings_dim)
+        self.qkv_proj = nn.Linear(self.mha_dim, 3 * self.mha_dim)
+        self.mha = nn.MultiheadAttention(
+            embed_dim=self.mha_dim,
+            num_heads=num_heads, 
+            batch_first=True
+        )
+        self.norm1 = nn.LayerNorm(self.mha_dim)
+        self.dropout = nn.Dropout(dropout)
+        """
+        
+        self.embeddings = nn.Linear(self.current_channels, self.embeddings_dim)
+        # self.embeddings = nn.Linear(256 * outmap_size, self.embeddings_dim)
         # self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
 
         for m in self.modules():
@@ -1077,7 +1091,7 @@ class ResNet34SE(SpeakerRecognitionModel):
         self._set_optimizers()
         self._set_hyperparams()
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.instancenorm(x)
         x = self.conv1(x)
         x = self.bn1(x)
@@ -1088,17 +1102,30 @@ class ResNet34SE(SpeakerRecognitionModel):
         x = self.conv3_x(x)
         x = self.conv4_x(x)
         x = self.conv5_x(x)
-
+        
         # x = x.reshape(x.size()[0],-1,x.size()[-1])
+        
 
-        # w = self.attention(x)
-        # x = torch.sum(x * w, dim=2)
-        # x = x.view(x.size()[0], -1)
-
+        """
+        w = self.attention(x)
+        x = torch.sum(x * w, dim=2)
+        x = x.view(x.size()[0], -1)
+        """
         # x = self.pool1(x)
         # x = self.pool2(x)
         x = self.pool(x)
         x = torch.flatten(x, 1)
+        """
+        x = x.reshape(x.shape[0],-1,self.mha_dim)
+
+        qkv = self.qkv_proj(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+        
+        attn, _ = self.mha(query=q, key=k, value=v)
+        x = x + self.dropout(attn)
+        x = self.norm1(x)
+        x = torch.flatten(x, 1)
+        """
         # x = self.sp(x)
         x = self.embeddings(x)
 
@@ -1371,6 +1398,9 @@ class Var_ECAPA(SpeakerRecognitionModel):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+
+        self._set_optimizers()
+        self._set_hyperparams()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.conv1(x)
