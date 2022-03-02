@@ -64,6 +64,26 @@ class SpeakerRecognitionModel(LightningModule):
             num_classes=self.num_classes,
             average=self.average
         )
+        self.train_top1_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=1
+        )
+        self.val_top1_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=1
+        )
+        self.train_top5_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=5
+        )
+        self.val_top5_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=5
+        )
 
         self.train_f1 = F1Score(
             num_classes=self.num_classes,
@@ -73,8 +93,26 @@ class SpeakerRecognitionModel(LightningModule):
             num_classes=self.num_classes,
             average=self.average
         )
-
-        # self._set_optimizers()
+        self.train_top1_f1 = F1Score(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=1
+        )
+        self.val_top1_f1 = F1Score(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=1
+        )
+        self.train_top5_f1 = F1Score(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=5
+        )
+        self.val_top5_f1 = F1Score(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=5
+        )
 
     def _set_optimizers(self):
         if self.optimizer == "RMSprop":
@@ -362,12 +400,20 @@ class SpeakerRecognitionModel(LightningModule):
 
         self.train_acc(logits, true_labels)
         self.train_f1(logits, true_labels)
+        self.train_top1_acc(logits, true_labels)
+        self.train_top1_f1(logits, true_labels)
+        self.train_top5_acc(logits, true_labels)
+        self.train_top5_f1(logits, true_labels)
 
         metrics_dict = dict(
             [
                 ("train_loss", loss),
                 ("train_acc", self.train_acc), 
-                ("train_f1", self.train_f1)
+                ("train_f1", self.train_f1),
+                ("train_top1_acc", self.train_top1_acc), 
+                ("train_top1_f1", self.train_top1_f1),
+                ("train_top5_acc", self.train_top5_acc), 
+                ("train_top5_f1", self.train_top5_f1)
             ]
         )
         for metric_name, metric_val in metrics_dict.items():
@@ -389,6 +435,10 @@ class SpeakerRecognitionModel(LightningModule):
 
         self.val_acc(logits, true_labels)
         self.val_f1(logits, true_labels)
+        self.val_top1_acc(logits, true_labels)
+        self.val_top1_f1(logits, true_labels)
+        self.val_top5_acc(logits, true_labels)
+        self.val_top5_f1(logits, true_labels)
 
         """
         scores, labels = self.compute_scores(
@@ -409,7 +459,11 @@ class SpeakerRecognitionModel(LightningModule):
             [
                 ("val_loss", loss),
                 ("val_acc", self.val_acc), 
-                ("val_f1", self.val_f1), 
+                ("val_f1", self.val_f1),
+                ("val_top1_acc", self.val_top1_acc), 
+                ("val_top1_f1", self.val_top1_f1),
+                ("val_top5_acc", self.val_top5_acc), 
+                ("val_top5_f1", self.val_top5_f1), 
             ]
         )
         for metric_name, metric_val in metrics_dict.items():
@@ -427,12 +481,20 @@ class SpeakerRecognitionModel(LightningModule):
         
         mean_acc = self.val_acc.compute()
         mean_f1 = self.val_f1.compute()
+        mean_top1_acc = self.val_top1_acc.compute()
+        mean_top1_f1 = self.val_top1_f1.compute()
+        mean_top5_acc = self.val_top5_acc.compute()
+        mean_top5_f1 = self.val_top5_f1.compute()
 
         self.logger.log_hyperparams(
             params=self.hparam_dict,
             metrics=dict(
-                val_acc=mean_acc, 
-                val_f1=mean_f1
+                val_acc=mean_acc,
+                val_f1=mean_f1,
+                val_top1_acc=mean_top1_acc, 
+                val_top1_f1=mean_top1_f1,
+                val_top5_acc=mean_top5_acc, 
+                val_top5_f1=mean_top5_f1
             )
         )
         self.logger.save()
@@ -1028,8 +1090,9 @@ class ResNet34SE(SpeakerRecognitionModel):
         self.current_channels = 64
         num_heads = 8
         dropout = 0.3
+        self.attn_expansion = 3
 
-        self.instancenorm   = nn.InstanceNorm2d(n_mels)
+        # self.instancenorm   = nn.InstanceNorm2d(n_mels)
         self.conv1 = nn.Conv2d(
             1, 
             self.current_channels, 
@@ -1046,6 +1109,7 @@ class ResNet34SE(SpeakerRecognitionModel):
         self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.attn_pool = SelfAttentionPooling(self.attn_expansion)
         # self.pool1 = SelfAttentionPooling(10)
         # self.pool2 = VarSelfAttentionPooling(512, 10)
         # self.sp = StatsPoolingLayer()
@@ -1073,7 +1137,10 @@ class ResNet34SE(SpeakerRecognitionModel):
         self.dropout = nn.Dropout(dropout)
         """
         
-        self.embeddings = nn.Linear(self.current_channels, self.embeddings_dim)
+        self.embeddings = nn.Linear(
+            self.current_channels * self.attn_expansion, 
+            self.embeddings_dim
+        )
         # self.embeddings = nn.Linear(256 * outmap_size, self.embeddings_dim)
         # self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
 
@@ -1092,7 +1159,7 @@ class ResNet34SE(SpeakerRecognitionModel):
         self._set_hyperparams()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.instancenorm(x)
+        # x = self.instancenorm(x)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.gelu(x)
@@ -1102,6 +1169,8 @@ class ResNet34SE(SpeakerRecognitionModel):
         x = self.conv3_x(x)
         x = self.conv4_x(x)
         x = self.conv5_x(x)
+        x = self.attn_pool(x)
+        x = torch.flatten(x, start_dim=1)
         
         # x = x.reshape(x.size()[0],-1,x.size()[-1])
         
@@ -1113,8 +1182,8 @@ class ResNet34SE(SpeakerRecognitionModel):
         """
         # x = self.pool1(x)
         # x = self.pool2(x)
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
+        # x = self.pool(x)
+        # x = torch.flatten(x, 1)
         """
         x = x.reshape(x.shape[0],-1,self.mha_dim)
 
