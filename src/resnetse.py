@@ -143,6 +143,7 @@ class ResNetSE(SpeakerRecognitionModel):
                 nn.init.constant_(m.bias, 0)
 
         self._set_optimizers()
+        self._set_hyperparams()
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -258,6 +259,7 @@ class ResNetSEV2(SpeakerRecognitionModel):
                 nn.init.constant_(m.bias, 0)
 
         self._set_optimizers()
+        self._set_hyperparams()
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None

@@ -25,6 +25,7 @@ class VoxCelebDataset(Dataset):
         self.num_secs = num_secs
         self.spec_augment = spec_augment
         self.from_memory = from_memory
+        self.csv_base_path = csv_base_path
 
         self.df = pd.read_csv(
             csv_base_path + f"subset_features_{num_secs}.csv"
@@ -44,8 +45,9 @@ class VoxCelebDataset(Dataset):
                 total=len(self.df),
                 desc=f"Loading data for {set_name}"
             ):
+                filename = self.csv_base_path + row["File"]
                 self.data.append(
-                    (torch.load(row["File"]), row["Speaker"])
+                    (torch.load(filename), row["Speaker"])
                 )
         else:
             self.data = None
@@ -64,7 +66,7 @@ class VoxCelebDataset(Dataset):
             features = self.data[idx][0]
             speaker_id = self.data[idx][1]
         else:
-            filename = self.df.iloc[idx]["File"]
+            filename = self.csv_base_path + self.df.iloc[idx]["File"]
             features = torch.load(filename)
             speaker_id = self.df.iloc[idx]["Speaker"]
 
@@ -125,6 +127,7 @@ class VoxCelebDataModule(LightningDataModule):
         self, 
         data_dir: str = "E:/Datasets/VoxCeleb1/",
         batch_size: int = 4,
+        num_secs: int =3,
         pin_memory: bool = True,
         num_workers: int = 0,
         spec_augment: bool = True,
@@ -133,6 +136,7 @@ class VoxCelebDataModule(LightningDataModule):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
+        self.num_secs = num_secs
         self.pin_memory = pin_memory
         self.num_workers = num_workers
         self.spec_augment = spec_augment
@@ -150,13 +154,15 @@ class VoxCelebDataModule(LightningDataModule):
                 csv_base_path=self.data_dir + "subset/",
                 set_name="train",
                 spec_augment=self.spec_augment,
-                from_memory=self.from_memory
+                from_memory=self.from_memory,
+                num_secs=self.num_secs
             )
             self.vox_val = VoxCelebDataset(
                 csv_base_path=self.data_dir + "subset/",
                 set_name="val",
                 spec_augment=self.spec_augment,
-                from_memory=self.from_memory
+                from_memory=self.from_memory,
+                num_secs=self.num_secs
             )
 
         # Assign test dataset for use in dataloader(s)
@@ -165,7 +171,8 @@ class VoxCelebDataModule(LightningDataModule):
                 csv_base_path=self.data_dir + "subset/",
                 set_name="test",
                 spec_augment=self.spec_augment,
-                from_memory=self.from_memory
+                from_memory=self.from_memory,
+                num_secs=self.num_secs
             )
 
     def train_dataloader(self):

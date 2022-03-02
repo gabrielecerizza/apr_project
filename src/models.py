@@ -56,12 +56,20 @@ class SpeakerRecognitionModel(LightningModule):
         self.top_n = top_n
         self.loss_func = loss_func
             
-        self.acc = Accuracy(
+        self.train_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average
+        )
+        self.val_acc = Accuracy(
             num_classes=self.num_classes,
             average=self.average
         )
 
-        self.f1 = F1Score(
+        self.train_f1 = F1Score(
+            num_classes=self.num_classes,
+            average=self.average
+        )
+        self.val_f1 = F1Score(
             num_classes=self.num_classes,
             average=self.average
         )
@@ -113,6 +121,39 @@ class SpeakerRecognitionModel(LightningModule):
                 self.optimizer,
                 patience=2
             )
+
+    def _set_hyperparams(self):
+        lr_sch = "none"
+        margin = "none"
+        scale = "none"
+
+        lr = self.optimizer.state_dict()["param_groups"][0]["lr"]
+        loss_func = self.loss_func.__class__.__name__
+        if loss_func == "SubCenterAAMSoftmaxLoss" or \
+            loss_func == "AAMSoftmaxLoss":
+            margin = self.loss_func.m
+            scale = self.loss_func.s
+        if self.lr_scheduler is not None:
+            lr_sch = self.lr_scheduler.__class__.__name__
+            
+
+        self.hparam_dict = {
+            "hp/num_classes": self.num_classes,
+            "hp/embeddings_dim": self.embeddings_dim,
+            "hp/loss_func": loss_func,
+            "hp/loss_margin": margin,
+            "hp/loss_scale": scale,
+            "hp/optimizer": self.optimizer.__class__.__name__,
+            "hp/lr": lr,
+            "hp/lr_scheduler": lr_sch,
+            "hp/average": self.average,
+            "hp/num_secs": self.num_secs,
+            "hp/feature_type": self.feature_type,
+            "hp/embeddings_strategy": self.embeddings_strategy,
+            "hp/cohort_strategy": self.cohort_strategy,
+            "hp/normalization_strategy": self.normalization_strategy,
+            "hp/top_n": self.top_n
+        }
         
     def set_optimizer(
         self, 
@@ -313,21 +354,23 @@ class SpeakerRecognitionModel(LightningModule):
         assert not labels.isnan().any()
 
         return scores, labels 
-
+    
     def training_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
         out = self(x)
         loss, logits = self.loss_func(out, true_labels)
 
-        train_acc = self.acc(logits, true_labels)
-        train_f1 = self.f1(logits, true_labels)
+        self.train_acc(logits, true_labels)
+        self.train_f1(logits, true_labels)
 
-        metrics_ls = [
-            ("train_loss", loss),
-            ("train_acc", train_acc), 
-            ("train_f1", train_f1)
-        ]
-        for metric_name, metric_val in metrics_ls:
+        metrics_dict = dict(
+            [
+                ("train_loss", loss),
+                ("train_acc", self.train_acc), 
+                ("train_f1", self.train_f1)
+            ]
+        )
+        for metric_name, metric_val in metrics_dict.items():
             self.log(
                 metric_name, 
                 metric_val,
@@ -344,8 +387,8 @@ class SpeakerRecognitionModel(LightningModule):
         loss, logits = self.loss_func(out, true_labels)
         batch["embeddings"] = out
 
-        val_acc = self.acc(logits, true_labels)
-        val_f1 = self.f1(logits, true_labels)
+        self.val_acc(logits, true_labels)
+        self.val_f1(logits, true_labels)
 
         """
         scores, labels = self.compute_scores(
@@ -362,23 +405,39 @@ class SpeakerRecognitionModel(LightningModule):
         val_eer = compute_eer(scores.numpy(), labels.numpy())
         """
 
-        metrics_ls = [
-            ("val_loss", loss),
-            ("val_acc", val_acc), 
-            ("val_f1", val_f1), 
-            # ("val_min_dcf", val_min_dcf),
-            # ("val_eer", val_eer)
-        ]
-        for metric_name, metric_val in metrics_ls:
+        metrics_dict = dict(
+            [
+                ("val_loss", loss),
+                ("val_acc", self.val_acc), 
+                ("val_f1", self.val_f1), 
+            ]
+        )
+        for metric_name, metric_val in metrics_dict.items():
             self.log(
                 metric_name, 
                 metric_val,
                 prog_bar=True,
-                on_step=True, 
+                on_step=True,
                 on_epoch=True
             )
 
         return loss
+
+    def validation_epoch_end(self, outputs) -> None:
+        
+        mean_acc = self.val_acc.compute()
+        mean_f1 = self.val_f1.compute()
+
+        self.logger.log_hyperparams(
+            params=self.hparam_dict,
+            metrics=dict(
+                val_acc=mean_acc, 
+                val_f1=mean_f1
+            )
+        )
+        self.logger.save()
+
+        return super().validation_epoch_end(outputs)
 
     def on_test_epoch_start(self) -> None:
         self.create_embeddings()
@@ -972,23 +1031,24 @@ class ResNet34SE(SpeakerRecognitionModel):
         self.conv1 = nn.Conv2d(
             1, 
             self.current_channels, 
-            kernel_size=7, 
-            stride=2, 
-            padding=3, 
+            kernel_size=3,
+            stride=1,
+            padding=1,
             bias=False
         )
         self.bn1 = nn.BatchNorm2d(self.current_channels)
-        self.relu = nn.ReLU()
+        self.gelu = nn.GELU()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.conv2_x = self._make_sequence(64, num_blocks=3)
         self.conv3_x = self._make_sequence(128, num_blocks=4, stride=2)
         self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
-        # self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.pool1 = SelfAttentionPooling(3)
-        self.pool2 = VarSelfAttentionPooling(512, 3)
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        # self.pool1 = SelfAttentionPooling(10)
+        # self.pool2 = VarSelfAttentionPooling(512, 10)
         # self.sp = StatsPoolingLayer()
 
+        """
         outmap_size = int(n_mels/4)
 
         self.attention = nn.Sequential(
@@ -998,6 +1058,7 @@ class ResNet34SE(SpeakerRecognitionModel):
             nn.Conv1d(128, 512 * outmap_size, kernel_size=1),
             nn.Softmax(dim=2),
         )
+        """
 
         self.embeddings = nn.Linear(512, self.embeddings_dim)
         # self.clf = nn.Linear(self.embeddings_dim, self.num_classes)
@@ -1014,12 +1075,13 @@ class ResNet34SE(SpeakerRecognitionModel):
                 nn.init.constant_(m.bias, 0)
 
         self._set_optimizers()
+        self._set_hyperparams()
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.instancenorm(x)
         x = self.conv1(x)
         x = self.bn1(x)
-        x = self.relu(x)
+        x = self.gelu(x)
         x = self.maxpool(x)
 
         x = self.conv2_x(x)
@@ -1033,10 +1095,10 @@ class ResNet34SE(SpeakerRecognitionModel):
         # x = torch.sum(x * w, dim=2)
         # x = x.view(x.size()[0], -1)
 
-        x = self.pool1(x)
-        x = self.pool2(x)
-        # x = self.pool(x)
-        # x = torch.flatten(x, 1)
+        # x = self.pool1(x)
+        # x = self.pool2(x)
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
         # x = self.sp(x)
         x = self.embeddings(x)
 
@@ -1425,6 +1487,7 @@ class MHA_LAS(SpeakerRecognitionModel):
 
         self._initialize_weights()
         self._set_optimizers()
+        self._set_hyperparams()
 
     def _initialize_weights(self):
         for m in self.modules():
@@ -1771,6 +1834,7 @@ class EfficientNetV2(SpeakerRecognitionModel):
 
         self._initialize_weights()
         self._set_optimizers()
+        self._set_hyperparams()
 
     def _initialize_weights(self) -> None:
         for m in self.modules():

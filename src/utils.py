@@ -243,6 +243,12 @@ def create_features_from_row(
         os.makedirs(melspec_dir, exist_ok=True)
         torch.save(melspec, melspec_filename)
     
+        relative_path = f"features_{clip_secs}/" \
+            + row["Set"] + "/" + row["File"]
+        relative_dir = os.path.dirname(relative_path)
+        relative_filename = relative_dir + "/" + filename \
+            + "_" + filename_aug + ".pt"
+
         ls.append(
             (
                 row["Set"], 
@@ -251,7 +257,7 @@ def create_features_from_row(
                 augment,
                 seconds,
                 os.path.dirname(row["File"]),
-                melspec_filename
+                relative_filename
             )
         )
 
@@ -267,7 +273,8 @@ def create_dataset(
     n_mels: int = 80,
     power: float = 1.0, # 1 for energy, 2 for power
     to_db_flag: bool = True,
-    cmn_flag: bool = True
+    cmn_flag: bool = True,
+    speaker_ids: list = None
 ):
     random_clip = RandomClip(clip_secs=clip_secs)
     rsc = RandomSpeedChange()
@@ -295,19 +302,23 @@ def create_dataset(
         f_ratio = gender_df["Gender"].value_counts(normalize=True)["f"]
         n_males = int(num_speakers * m_ratio)
         n_females = num_speakers - n_males
-        male_ids = random.sample(
-            list(
-                gender_df[gender_df["Gender"] == "m"]["VoxCeleb1 ID"].unique()
-            ),
-            n_males
-        )
-        female_ids = random.sample(
-            list(
-                gender_df[gender_df["Gender"] == "f"]["VoxCeleb1 ID"].unique()
-            ),
-            n_females
-        )
-        chosen_ids = male_ids + female_ids
+        
+        if speaker_ids is None:
+            male_ids = random.sample(
+                list(
+                    gender_df[gender_df["Gender"] == "m"]["VoxCeleb1 ID"].unique()
+                ),
+                n_males
+            )
+            female_ids = random.sample(
+                list(
+                    gender_df[gender_df["Gender"] == "f"]["VoxCeleb1 ID"].unique()
+                ),
+                n_females
+            )
+            chosen_ids = male_ids + female_ids
+        else:
+            chosen_ids = speaker_ids
 
         for line in file:
             set_num, audio_path = line.split()
