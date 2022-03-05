@@ -4,6 +4,7 @@ import json
 import math
 import os
 from typing import Callable, Optional, Union
+from matplotlib.pyplot import xlim
 
 import pandas as pd
 import torch
@@ -136,7 +137,7 @@ class SpeakerRecognitionModel(LightningModule):
         elif self.optimizer is None or self.optimizer == "AdamW":
             self.optimizer = torch.optim.AdamW(
                 self.parameters(), 
-                lr=self.lr or 1e-3, 
+                lr=self.lr or 0.001, 
                 eps=1e-8
             )
         if self.lr_scheduler == "StepLR":
@@ -149,8 +150,8 @@ class SpeakerRecognitionModel(LightningModule):
             self.lr_scheduler = torch.optim.lr_scheduler.CyclicLR(
                 optimizer=self.optimizer,
                 base_lr=1e-5,
-                max_lr=1e-2,
-                step_size_up=5000,
+                max_lr=1e-3,
+                step_size_up=100000,
                 cycle_momentum=False,
                 mode="triangular2"
             )
@@ -858,6 +859,24 @@ class SelfAttentionPooling(nn.Module):
         return e
 
 
+class ConvSelfAttentionPooling(nn.Module):
+    def __init__(self, attn_expansion: int) -> None:
+        super(ConvSelfAttentionPooling, self).__init__()
+        self.attention = nn.Sequential(
+            nn.Conv1d(256 * attn_expansion, 128, kernel_size=1),
+            nn.GELU(),
+            nn.BatchNorm1d(128),
+            nn.Conv1d(128, 256 * attn_expansion, kernel_size=1),
+            nn.Softmax(dim=2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.reshape(x.shape[0], -1, x.shape[-1])
+        w = self.attention(x)
+        out = torch.sum(x * w, dim=2)
+        return torch.flatten(out, start_dim=1)
+
+
 class VarSelfAttentionPooling(nn.Module):
     """Variant of self-attention pooling to further
     decrease the number of dimensions. We perform
@@ -1071,6 +1090,168 @@ class ResNet34(SpeakerRecognitionModel):
         return nn.Sequential(*layers)
 
 
+class ResNet20Seq(nn.Module):
+    def __init__(
+        self, 
+        in_channels, 
+        out_channels, 
+        num_blocks
+    ) -> None:
+        super(ResNet20Seq, self).__init__()
+        self.seq1 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=3,
+                stride=2,
+                padding=1
+            ),
+            nn.PReLU()
+        )
+        
+        layers = []
+        for _ in range(1, num_blocks):
+            layers.append(
+                nn.Conv2d(
+                    in_channels=out_channels,
+                    out_channels=out_channels,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1
+                )
+            )
+            layers.append(
+                nn.PReLU()
+            )
+
+        self.seq2 = nn.Sequential(*layers)
+
+        for m in self.seq1.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_normal_(
+                    m.weight
+                )
+                nn.init.constant_(
+                    m.bias,
+                    0
+                )
+
+        for m in self.seq2.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.normal_(
+                    m.weight,
+                    std=0.01
+                )
+                nn.init.constant_(
+                    m.bias,
+                    0
+                )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out1 = self.seq1(x)
+        out2 = self.seq2(out1)
+        return out1 + out2
+
+
+class ResNet20SeqSameDim(nn.Module):
+    def __init__(
+        self, 
+        n_channels
+    ) -> None:
+        super(ResNet20SeqSameDim, self).__init__()
+        self.seq = nn.Sequential(
+            nn.Conv2d(
+                in_channels=n_channels,
+                out_channels=n_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1
+            ),
+            nn.PReLU(),
+            nn.Conv2d(
+                in_channels=n_channels,
+                out_channels=n_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1
+            ),
+            nn.PReLU()
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.normal_(
+                    m.weight,
+                    std=0.01
+                )
+                nn.init.constant_(
+                    m.bias,
+                    0
+                )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.seq(x)
+        return out + x
+
+
+class ResNet20(SpeakerRecognitionModel):
+    """ResNet34 model, as described in [1]. The
+    implementation is a simplified and slightly
+    modified version of the official PyTorch 
+    Vision ResNet.
+
+    References
+    ----------
+        [1] K. He, X. Zhang, S. Ren and J. Sun, "Deep 
+        Residual Learning for Image Recognition", 2016 IEEE 
+        Conference on Computer Vision and Pattern Recognition 
+        (CVPR), 2016, pp. 770-778.
+    """
+    def __init__(self, **kwargs) -> None:
+        super(ResNet20, self).__init__(**kwargs)
+
+        self.res1_3 = ResNet20Seq(1, 64, 3)
+        self.res2_3 = ResNet20Seq(64, 128, 3)
+        self.res2_5 = ResNet20SeqSameDim(128)
+        self.res3_3 = ResNet20Seq(128, 256, 3)
+        self.res3_5 = ResNet20SeqSameDim(256)
+        self.res3_7 = ResNet20SeqSameDim(256)
+        self.res3_9 = ResNet20SeqSameDim(256)
+        self.res4_3 = ResNet20Seq(256, 512, 3)
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.embeddings = nn.Linear(
+            512, self.embeddings_dim
+        )
+    
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(
+                    m.weight, 
+                )
+                nn.init.constant_(
+                    m.bias,
+                    0
+                )
+
+        self._set_optimizers()
+        self._set_hyperparams()
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.res1_3(x)
+        x = self.res2_3(x)
+        x = self.res2_5(x)
+        x = self.res3_3(x)
+        x = self.res3_5(x)
+        x = self.res3_7(x)
+        x = self.res3_9(x)
+        x = self.res4_3(x)
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        x = self.embeddings(x)
+
+        return x
+
+
 class ResNet34SE(SpeakerRecognitionModel):
     """ResNet34 model, as described in [1]. The
     implementation is a simplified and slightly
@@ -1087,29 +1268,29 @@ class ResNet34SE(SpeakerRecognitionModel):
     def __init__(self, n_mels=80, **kwargs) -> None:
         super(ResNet34SE, self).__init__(**kwargs)
 
-        self.current_channels = 64
+        self.current_channels = 32
         num_heads = 8
         dropout = 0.3
-        self.attn_expansion = 3
+        self.attn_expansion = int(n_mels / 8)
 
         # self.instancenorm   = nn.InstanceNorm2d(n_mels)
         self.conv1 = nn.Conv2d(
             1, 
             self.current_channels, 
-            kernel_size=7,
-            stride=2,
-            padding=3,
+            kernel_size=3,
+            stride=1,
+            padding=1,
             bias=False
         )
         self.bn1 = nn.BatchNorm2d(self.current_channels)
         self.gelu = nn.GELU()
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.conv2_x = self._make_sequence(64, num_blocks=3)
-        self.conv3_x = self._make_sequence(128, num_blocks=4, stride=2)
-        self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
-        self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.attn_pool = SelfAttentionPooling(self.attn_expansion)
+        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.conv2_x = self._make_sequence(32, num_blocks=3)
+        self.conv3_x = self._make_sequence(64, num_blocks=4, stride=2)
+        self.conv4_x = self._make_sequence(128, num_blocks=6, stride=2)
+        self.conv5_x = self._make_sequence(256, num_blocks=3, stride=2)
+        # self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.attn_pool = ConvSelfAttentionPooling(self.attn_expansion)
         # self.pool1 = SelfAttentionPooling(10)
         # self.pool2 = VarSelfAttentionPooling(512, 10)
         # self.sp = StatsPoolingLayer()
@@ -1159,18 +1340,26 @@ class ResNet34SE(SpeakerRecognitionModel):
         self._set_hyperparams()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x = self.instancenorm(x)
+        
+        """
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(enabled=False):
+                x = x + 1e-6
+                x = x.log()
+                x = self.instancenorm(x)
+        """
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.gelu(x)
-        x = self.maxpool(x)
+        # x = self.maxpool(x)
 
         x = self.conv2_x(x)
         x = self.conv3_x(x)
         x = self.conv4_x(x)
         x = self.conv5_x(x)
         x = self.attn_pool(x)
-        x = torch.flatten(x, start_dim=1)
+        # x = torch.flatten(x, start_dim=1)
         
         # x = x.reshape(x.size()[0],-1,x.size()[-1])
         

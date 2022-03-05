@@ -24,17 +24,22 @@ class RandomClip:
         self.clip_length = clip_secs * sample_rate
 
     def __call__(self, audio_data):
-        audio_data = audio_data[0]
-        audio_length = audio_data.shape[0]
+        audio_data = audio_data
+        audio_length = audio_data.shape[-1]
         if audio_length > self.clip_length:
+            audio_data = audio_data[0]
             offset = random.randint(0, audio_length - self.clip_length)
             audio_data = audio_data[offset:(offset+self.clip_length)]
+            audio_data = audio_data.unsqueeze(0)
         elif audio_length < self.clip_length:
+            audio_data = audio_data.unsqueeze(0)
+            # print(audio_data.shape)
             audio_data = pad_tensor(
-                audio_data.unsqueeze(0), audio_length, self.clip_length
+                audio_data, audio_length, self.clip_length
             )[0]
+            # print(audio_data.shape)
 
-        return audio_data.unsqueeze(0)
+        return audio_data
 
 
 class RandomSpeedChange:
@@ -126,18 +131,18 @@ class MeanNormalizer:
 
 def extract_logmel(
     waveform, 
-    sample_rate,
-    n_mels,
+    sample_rate: int = 16000,
+    n_mels: int = 80,
     power = 1.0, # 1 for energy, 2 for power
-    to_db_flag = True,
-    cmn_flag = True
+    to_db_flag: bool = True,
+    cmn_flag: bool = True,
+    n_fft: int = 400,
+    win_length: int = None,
+    hop_length: int = 160
 ):
     # With sample rate 16000 Hz, 1/16000 * 400 = 0.025
-    # so n_fft = 400 yields windows of 25 ms
-    n_fft = 400 
-    win_length = None
-    hop_length = 160 # frame-shift of 10 ms
-    n_mels = n_mels
+    # so n_fft = 400 yields windows of 25 ms 
+    # hop_length: frame-shift of 10 ms
 
     mel_spectrogram = T.MelSpectrogram(
         sample_rate=sample_rate,
@@ -151,6 +156,7 @@ def extract_logmel(
         onesided=True,
         n_mels=n_mels,
         mel_scale="htk",
+        window_fn=torch.hamming_window
     )
     cmn = T.SlidingWindowCmn(cmn_window=n_fft)
     to_db = T.AmplitudeToDB(stype="amplitude")
@@ -182,7 +188,11 @@ def create_features_from_row(
     clip_secs, n_mels,
     power = 1.0, # 1 for energy, 2 for power
     to_db_flag = True,
-    cmn_flag = True
+    cmn_flag = True,
+    n_fft: int = 400,
+    win_length: int = None,
+    hop_length: int = 160,
+    data_aug: bool = True
 ):
     audio_path = row["File"]
     wav_path = base_path + "vox1_dev/" + audio_path
@@ -199,6 +209,9 @@ def create_features_from_row(
         filename_aug = ""
 
         if row["Set"] != "train" and augment != "none":
+            continue
+
+        if data_aug == False and augment != "none":
             continue
 
         if augment == "speed":
@@ -219,7 +232,8 @@ def create_features_from_row(
             waveform = babble(waveform)
             filename_aug = "bbl"
 
-        waveform = random_clip(waveform)
+        if clip_secs is not None:
+            waveform = random_clip(waveform)
         seconds = librosa.get_duration(
             y=waveform[0], sr=sample_rate
         )
@@ -228,14 +242,20 @@ def create_features_from_row(
             + row["Set"] + "/" + row["File"]
         save_dir = os.path.dirname(save_path)
 
-        melspec = extract_logmel(
-            waveform=waveform, 
-            sample_rate=sample_rate, 
-            n_mels=n_mels,
-            power=power,
-            to_db_flag=to_db_flag,
-            cmn_flag=cmn_flag
-        )
+        if data_aug:
+            melspec = extract_logmel(
+                waveform=waveform, 
+                sample_rate=sample_rate, 
+                n_mels=n_mels,
+                power=power,
+                to_db_flag=to_db_flag,
+                cmn_flag=cmn_flag,
+                n_fft=n_fft,
+                win_length=win_length,
+                hop_length=hop_length
+            )
+        else:
+            melspec = waveform
 
         melspec_filename = save_dir + "/" + filename \
             + "_" + filename_aug + ".pt"
@@ -274,9 +294,16 @@ def create_dataset(
     power: float = 1.0, # 1 for energy, 2 for power
     to_db_flag: bool = True,
     cmn_flag: bool = True,
-    speaker_ids: list = None
+    speaker_ids: list = None,
+    n_fft: int = 400,
+    win_length: int = None,
+    hop_length: int = 160,
+    data_aug: bool = True
 ):
-    random_clip = RandomClip(clip_secs=clip_secs)
+    if clip_secs is not None:
+        random_clip = RandomClip(clip_secs=clip_secs)
+    else:
+        random_clip = None
     rsc = RandomSpeedChange()
     rbn = RandomBackgroundNoise(
         noise_dir=noise_dir
@@ -371,7 +398,11 @@ def create_dataset(
             n_mels=n_mels,
             power=power,
             to_db_flag=to_db_flag,
-            cmn_flag=cmn_flag
+            cmn_flag=cmn_flag,
+            n_fft=n_fft,
+            win_length=win_length,
+            hop_length=hop_length,
+            data_aug=data_aug
         )
         ls.extend(feat_ls)
 
@@ -452,16 +483,26 @@ def plot_spectrogram(
 
 
 def pad_tensor(x, x_len, max_len):
-    pad_begin_len = torch.randint(
-        low=0, high=max_len - x_len, size=(1,)
-    )
-    pad_end_len = max_len - x_len - pad_begin_len
+    if x_len < max_len:
+        x = x[0]  
+        pad_begin_len = torch.randint(
+            low=0, high=max_len - x_len, size=(1,)
+        )
+        pad_end_len = max_len - x_len - pad_begin_len
 
-    pad_begin = torch.zeros((x.shape[0], pad_begin_len))
-    pad_end = torch.zeros((x.shape[0], pad_end_len))
+        pad_begin = torch.zeros((x.shape[0], pad_begin_len))
+        pad_end = torch.zeros((x.shape[0], pad_end_len))
+        try:
+            padded_tensor = torch.cat((pad_begin, x, pad_end), 1)
+        except Exception as e:
+            print("pad_begin.shape", pad_begin.shape)
+            print("x.shape", x.shape)
+            print("pad_end.shape", pad_end.shape)
+            raise e
 
-    padded_tensor = torch.cat((pad_begin, x, pad_end), 1)
-    return padded_tensor
+        return padded_tensor.unsqueeze(0)
+    else:
+        return x
 
 
 def split_in_secs(waveform, sample_rate=16000, num_secs=3):
