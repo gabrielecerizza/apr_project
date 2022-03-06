@@ -8,10 +8,13 @@ import librosa
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 import torchaudio
 import torchaudio.transforms as T
 from pedalboard import Pedalboard, Reverb
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from tqdm.auto import tqdm
 
 
@@ -525,5 +528,298 @@ def split_in_secs(waveform, sample_rate=16000, num_secs=3):
     return wav_ls
 
 
+def knn_plot(
+    csv_base_path: str = "E:/Datasets/VoxCeleb1/subset/",
+    num_secs: int = 4,
+    num_speakers: int = 8
+):
+    sns.set_theme()
+    sns.set_style("ticks")
+    sns.set_context("paper")
+
+    df = pd.read_csv(
+        csv_base_path + f"subset_features_{num_secs}.csv"
+    )
+    label_dict = pd.read_csv(
+        csv_base_path + f"subset_labels_{num_secs}.csv"
+    ).to_dict()["label"]
+    df_train = df[df["Set"] == "train"]
+    df_test = df[df["Set"] == "test"]
+    
+    melspecs_train = []
+    y_train = []
+    for idx, row in df_train.iterrows():
+        melspec = torch.load(csv_base_path + row["File"]).numpy()
+        melspecs_train.append(
+            melspec
+        )
+        y_train.append(
+            label_dict[row["Speaker"]]
+        )
+    X_train = np.vstack(melspecs_train)
+    X_train = X_train.reshape(X_train.shape[0], -1)
+    y_train = np.vstack(y_train).squeeze(-1)
+
+    melspecs_test = []
+    y_test = []
+    for idx, row in df_test.iterrows():
+        melspec = torch.load(csv_base_path + row["File"]).numpy()
+        melspecs_test.append(
+            melspec
+        )
+        y_test.append(
+            label_dict[row["Speaker"]]
+        )
+    X_test = np.vstack(melspecs_test)
+    X_test = X_test.reshape(X_test.shape[0], -1)
+    y_test = np.vstack(y_test).squeeze(-1)
+
+    kmeans = KMeans(n_clusters=num_speakers)
+    kmeans.fit(X_train)
+
+    pca = PCA(2)
+    pca.fit(X_train)
+    Xpca = pca.transform(X_test)
+
+    preds = kmeans.predict(X_test)
+    u_preds = np.unique(preds)
+    u_y = np.unique(y_test)
+
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2, 
+        figsize=(10,4),
+        sharey=True
+    )
+    fig.suptitle("Test set label distribution")
+    ax1.set_title("K-means clusters")
+    ax2.set_title("Ground truth")
+
+    for label in u_preds:
+        ax1.scatter(
+            Xpca[preds == label, 0], 
+            Xpca[preds == label, 1], 
+            # label=label,
+            alpha=1,
+            linewidths=0.5,
+            edgecolors="black"
+        )
+
+    for label in u_y:
+        ax2.scatter(
+            Xpca[y_test == label, 0], 
+            Xpca[y_test == label, 1], 
+            # label=label,
+            alpha=1,
+            linewidths=0.5,
+            edgecolors="black"
+        )
+    plt.show()
+    fig.savefig("k_means.png", dpi=300)
+
+    return X_test, Xpca, y_test, preds
+
+
+def get_stats_lists(df, meta_df, csv_base_path):
+    nat_ls = []
+    gender_ls = []
+    seconds_ls = []
+    for idx, row in df.iterrows():
+        augment = row["Augment"]
+        if augment == "none":
+            speaker = row["Speaker"]
+            nationality = list(
+                meta_df[meta_df["VoxCeleb1 ID"] == speaker]["Nationality"]
+            )[0]
+            gender = list(
+                meta_df[meta_df["VoxCeleb1 ID"] == speaker]["Gender"]
+            )[0]
+            nat_ls.append(nationality)
+            gender_ls.append(gender)
+            
+            path = row["Path"]
+            basename = os.path.basename(
+                row["File"]
+            )[0:-4]
+            file_path = csv_base_path + "vox1_dev/" + \
+                path + f"/{basename}.wav"
+            if not os.path.exists(file_path):
+                file_path = csv_base_path + "vox1_test/" + \
+                    path + f"/{basename}.wav"
+            waveform, sample_rate = torchaudio.load(file_path)
+            seconds = librosa.get_duration(
+                y=waveform[0], sr=sample_rate
+            )
+            seconds_ls.append(seconds)
+
+    return pd.Series(nat_ls), pd.Series(gender_ls), pd.Series(seconds_ls)
+
+
+def print_stats(subset, df, meta_df, csv_base_path):
+    print("*" * 20)
+    print(f"{subset.upper()} SET")
+    print("*" * 20)
+    print(f"Number of samples: {len(df)}")
+    nat_series, gender_series, seconds_series = get_stats_lists(
+        df, meta_df, csv_base_path
+    )
+    print("Nationality:")
+    print(nat_series.value_counts(normalize=True).round(2))
+    print("Gender:")
+    print(gender_series.value_counts(normalize=True).round(2))
+    print("Seconds:")
+    print(f"Mean: {seconds_series.mean().round(2)}; Std: {seconds_series.std().round(2)}")
+
+
+def get_dataset_stats(
+    csv_base_path: str = "E:/Datasets/VoxCeleb1/",
+    num_secs: int = 4,
+    num_speakers: int = 8
+):
+    df = pd.read_csv(
+        csv_base_path + f"subset/subset_features_{num_secs}.csv"
+    )
+    meta_df = pd.read_csv(csv_base_path + "vox1_meta.csv", sep="\t")
+    label_dict = pd.read_csv(
+        csv_base_path + f"subset/subset_labels_{num_secs}.csv"
+    ).to_dict()["label"]
+
+    speaker_ids = df["Speaker"].unique()
+    assert len(speaker_ids) == num_speakers
+
+    gender_ls = []
+    nat_ls = []
+    for speaker_id in speaker_ids:
+        gender_ls.append(
+            list(
+                meta_df[meta_df["VoxCeleb1 ID"] == speaker_id]["Gender"]
+            )[0]
+        )
+        nat_ls.append(
+            list(
+                meta_df[meta_df["VoxCeleb1 ID"] == speaker_id]["Nationality"]
+            )[0]
+        )
+
+    print("*" * 20)
+    print("GENERAL STATS")
+    print("*" * 20)
+    print("Gender in entire dataset:")
+    print(meta_df["Gender"].value_counts(normalize=True).round(2))
+    print("Gender in subset:")
+    print(pd.Series(gender_ls).value_counts(normalize=True).round(2))
+    print("Nationality in entire dataset:")
+    print(meta_df["Nationality"].value_counts(normalize=True).round(2))
+    print("Nationality in subset:")
+    print(pd.Series(nat_ls).value_counts(normalize=True).round(2))
+
+    df_train = df[df["Set"] == "train"]
+    df_train = df_train[df_train["Augment"] == "none"]
+    df_test = df[df["Set"] == "test"]
+    df_test = df_test[df_test["Augment"] == "none"]
+
+    print_stats("subset", df, meta_df, csv_base_path)
+    print_stats("train", df_train, meta_df, csv_base_path)
+    print_stats("test", df_test, meta_df, csv_base_path)
+
+
+def create_mfcc(
+    base_path: str = "E:/Datasets/VoxCeleb1/",
+    num_secs: int = 4,
+    data_aug: bool = True
+):
+    mfcc_t = torchaudio.transforms.MFCC(
+        sample_rate=16000,
+        n_mfcc=30
+    )
+
+    random_clip = RandomClip(clip_secs=num_secs)
+
+    df = pd.read_csv(
+        base_path + f"subset/subset_features_{num_secs}.csv"
+    )
+    df = df[df["Augment"] == "none"]
+    label_dict = pd.read_csv(
+        base_path + f"subset/subset_labels_{num_secs}.csv"
+    ).to_dict()["label"]
+
+    res_ls = []
+
+    for idx, row in df.iterrows():
+        path = row["Path"]
+        basename = os.path.basename(
+            row["File"]
+        )[0:-4]
+        file_path = base_path + "vox1_dev/" + \
+            path + f"/{basename}.wav"
+        if not os.path.exists(file_path):
+            file_path = base_path + "vox1_test/" + \
+                path + f"/{basename}.wav"
+        waveform, sample_rate = torchaudio.load(file_path)
+        waveform = random_clip(waveform)
+        mfcc = mfcc_t(waveform)
+        save_dir = base_path + f"subset/mfcc_{num_secs}/" + \
+            path + f"/{basename}.pt"
+        os.makedirs(os.path.dirname(save_dir), exist_ok=True)
+        torch.save(mfcc, save_dir)
+
+        file_dir = f"subset/mfcc_{num_secs}/" + \
+            path + f"/{basename}.pt"
+
+        res_ls.append(
+            (
+                row["Set"],
+                row["Speaker"],
+                "mfcc",
+                "none",
+                path,
+                file_dir,
+                label_dict[row["Speaker"]]
+            )
+        )
+
+    df_res = pd.DataFrame(
+        res_ls, 
+        columns =["Set", "Speaker","Type", "Augment", "Path", "File", "Label"]
+    )
+    df_res.to_csv(
+        base_path + f"subset/subset_mfcc_{num_secs}.csv",
+        index_label=False
+    )
+
+
+def train_sklearn_model(
+    model,
+    num_secs = 4,
+    base_path: str = "E:/Datasets/VoxCeleb1/",
+    validate: bool = False
+):
+    def get_data(set_name):
+        df = pd.read_csv(
+            base_path + f"subset/subset_mfcc_{num_secs}.csv"
+        )
+        df_set = df[df["Set"] == set_name]
+        mfcc_ls = []
+        y_ls = []
+        for idx, row in df_set.iterrows():
+            mfcc = torch.load(base_path + row["File"]).numpy()
+            mfcc_ls.append(
+                mfcc
+            )
+            y_ls.append(
+                row["Label"]
+            )
+        X_mfcc = np.vstack(mfcc_ls)
+        X_mfcc = X_mfcc.reshape(X_mfcc.shape[0], -1)
+        y = np.vstack(y_ls).squeeze(-1)
+
+    X_train, y_train = get_data("train")
+    X_val, y_val = get_data("val")
+    X_test, y_test = get_data("test")
+
+    model.fit(X_train, y_train)
+    if validate:
+        return model.predict(X_val), y_val
+    else:
+        return model.predict(X_test), y_test
 
     

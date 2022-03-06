@@ -1,5 +1,3 @@
-from asyncio import staggered
-from itertools import cycle
 import json
 import math
 import os
@@ -14,7 +12,7 @@ from torch import nn, Tensor
 from torchmetrics import Accuracy, F1Score
 from tqdm.auto import tqdm
 
-from src.metrics import (
+from .metrics import (
     compute_eer, compute_error_rates, compute_min_dcf,
     torch_cosine_distances
 )

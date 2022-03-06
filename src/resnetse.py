@@ -3,7 +3,7 @@ import torchaudio
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter
-from src.models import SpeakerRecognitionModel
+from .models import SpeakerRecognitionModel
 
 
 class SEBasicBlock(nn.Module):

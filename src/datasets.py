@@ -9,7 +9,7 @@ from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from src.utils import (
+from .utils import (
     pad_tensor, RandomBackgroundNoise, RandomSpeedChange,
     extract_logmel
 )
@@ -54,19 +54,20 @@ class VoxCelebDataset(Dataset):
         self.win_length = win_length
         self.hop_length = hop_length
 
-        self.rsc = RandomSpeedChange()
-        self.rbn = RandomBackgroundNoise(
-            noise_dir=noise_dir
-        )
-        self.reverb = Pedalboard(
-            [Reverb(room_size=0.75)], 
-            # sample_rate=16000
-        )
-        self.babble = RandomBackgroundNoise(
-            noise_dir=babble_dir,
-            min_snr_db=15, 
-            max_snr_db=20
-        )
+        if self.data_augment:
+            self.rsc = RandomSpeedChange()
+            self.rbn = RandomBackgroundNoise(
+                noise_dir=noise_dir
+            )
+            self.reverb = Pedalboard(
+                [Reverb(room_size=0.75)], 
+                # sample_rate=16000
+            )
+            self.babble = RandomBackgroundNoise(
+                noise_dir=babble_dir,
+                min_snr_db=15, 
+                max_snr_db=20
+            )
 
         self.df = pd.read_csv(
             csv_base_path + f"subset_features_{num_secs}.csv"
