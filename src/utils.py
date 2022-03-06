@@ -195,7 +195,8 @@ def create_features_from_row(
     n_fft: int = 400,
     win_length: int = None,
     hop_length: int = 160,
-    data_aug: bool = True
+    data_aug: bool = True,
+    features_dir: str = "features"
 ):
     audio_path = row["File"]
     wav_path = base_path + "vox1_dev/" + audio_path
@@ -241,7 +242,7 @@ def create_features_from_row(
             y=waveform[0], sr=sample_rate
         )
 
-        save_path = base_path + f"subset/features_{clip_secs}/" \
+        save_path = base_path + f"subset/{features_dir}_{clip_secs}/" \
             + row["Set"] + "/" + row["File"]
         save_dir = os.path.dirname(save_path)
 
@@ -266,7 +267,7 @@ def create_features_from_row(
         os.makedirs(melspec_dir, exist_ok=True)
         torch.save(melspec, melspec_filename)
     
-        relative_path = f"features_{clip_secs}/" \
+        relative_path = f"{features_dir}_{clip_secs}/" \
             + row["Set"] + "/" + row["File"]
         relative_dir = os.path.dirname(relative_path)
         relative_filename = relative_dir + "/" + filename \
@@ -528,7 +529,7 @@ def split_in_secs(waveform, sample_rate=16000, num_secs=3):
     return wav_ls
 
 
-def knn_plot(
+def kmeans_plot(
     csv_base_path: str = "E:/Datasets/VoxCeleb1/subset/",
     num_secs: int = 4,
     num_speakers: int = 8

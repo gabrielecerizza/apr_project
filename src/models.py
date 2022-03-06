@@ -30,7 +30,7 @@ class SpeakerRecognitionModel(LightningModule):
         lr_scheduler_interval: str = "step",
         average: str = "weighted",
         num_secs: int = 3,
-        base_path: str = "E:/Datasets/VoxCeleb1/subset/",
+        base_path: str = "E:/Datasets/VoxCeleb1/",
         feature_type: str = "logmel",
         embeddings_strategy: str = "separate",
         cohort_strategy: str = "separate",
@@ -206,7 +206,7 @@ class SpeakerRecognitionModel(LightningModule):
         embeddings_ls = []
 
         df = pd.read_csv(
-            self.base_path + f"subset_features_{self.num_secs}.csv"
+            self.base_path + f"subset/subset_features_{self.num_secs}.csv"
         )
         df = df[df["Type"] == self.feature_type]
         for index, row in tqdm(
@@ -232,7 +232,7 @@ class SpeakerRecognitionModel(LightningModule):
             if self.embeddings_strategy == "mean":
                 raise NotImplementedError
             elif self.embeddings_strategy == "separate":
-                embeddings_file = self.base_path + "embeddings/" + row["Path"] \
+                embeddings_file = self.base_path + "subset/embeddings/" + row["Path"] \
                     + "/" + filename + "emb.pt"
                 save_dir = os.path.dirname(embeddings_file)
                 os.makedirs(save_dir, exist_ok=True)   
@@ -260,7 +260,7 @@ class SpeakerRecognitionModel(LightningModule):
             ]
         )
         embeddings_df.to_csv(
-            self.base_path + f"subset_embeddings_{self.num_secs}.csv", 
+            self.base_path + f"subset/subset_embeddings_{self.num_secs}.csv", 
             index_label=False
         )
 
@@ -288,7 +288,7 @@ class SpeakerRecognitionModel(LightningModule):
         labels = []
 
         df = pd.read_csv(
-            self.base_path + f"subset_embeddings_{self.num_secs}.csv"
+            self.base_path + f"subset/subset_embeddings_{self.num_secs}.csv"
         )
 
         speaker_embeddings_dict = dict()
@@ -391,7 +391,108 @@ class SpeakerRecognitionModel(LightningModule):
         assert not labels.isnan().any()
 
         return scores, labels 
-    
+
+    def compute_verification_scores(
+        self,
+        cohort_strategy="separate",
+        normalization_strategy="s_norm"
+    ):
+        scores = []
+        labels = []
+
+        df = pd.read_csv(
+            self.base_path + f"subset/subset_verification_{self.num_secs}.csv"
+        )
+        speaker_embeddings_dict = dict()
+
+        for index, row in df.iterrows():
+            speaker = row["Speaker"]
+            file = row["File"]
+            filename = os.path.splitext(os.path.basename(file))[0]
+            full_path = f"{self.base_path}subset/{filename}"
+            features = torch.load(full_path).unsqueeze(1)
+            embedding = self(features)[0]
+            speaker_embeddings_dict.setdefault(speaker, []).append(embedding)
+
+        speakers = list(speaker_embeddings_dict.keys())
+
+        cohort = torch.vstack(
+            [   
+                torch.vstack(speaker_embeddings_dict[speaker])
+                for speaker in speakers
+            ]
+        )
+
+        for speaker, embeddings_ls in tqdm(
+                speaker_embeddings_dict.items(),
+                total=len(speaker_embeddings_dict),
+                desc="Computing scores"
+            ):
+                for embedding in embeddings_ls:
+                    e_distances = torch_cosine_distances(
+                        embedding.unsqueeze(0), cohort
+                    )[0]
+                    e_distances, indices = torch.sort(e_distances)
+                    e_distances = e_distances[:self.top_n]
+
+                    me = torch.mean(e_distances)
+                    se = torch.std(e_distances, unbiased=True)
+
+                    for test_speaker, test_embeddings_ls in \
+                        speaker_embeddings_dict.items():
+
+                        for test_embedding in test_embeddings_ls:
+                            if normalization_strategy is None:
+                                # print(embedding.shape, test_embedding.shape)
+                                score = F.cosine_similarity(
+                                    embedding, test_embedding, dim=0
+                                )
+
+                            elif normalization_strategy == "s_norm":
+                                distance = torch_cosine_distances(
+                                    embedding.unsqueeze(0), 
+                                    test_embedding.unsqueeze(0)
+                                )[0]
+
+                                t_distances = torch_cosine_distances(
+                                    test_embedding.unsqueeze(0), cohort
+                                )[0]
+                                t_distances, indices = torch.sort(t_distances)
+                                t_distances = t_distances[:self.top_n]
+
+                                mt = torch.mean(t_distances)
+                                st = torch.std(t_distances, unbiased=True)
+
+                                e_term = (distance - me) / (se + 1) # + 1 to avoid 0
+                                t_term = (distance - mt) / (st + 1)
+                                
+                                # We negate the score so that the score 
+                                # is higher if the embeddings are similar
+                                score = -0.5 * (e_term + t_term)
+
+                            else:
+                                raise ValueError(
+                                    "unknown normalization argument"
+                                )
+
+                            if score.isnan():
+                                print("NaN score:", speaker, test_speaker, "\n")
+                                print("e_term", e_term, "\n")
+                                print("t_term", t_term, "\n")
+                                print("distance", distance, "\n")
+                                print("me se", me, se, "\n")
+                                print("st st", mt, st, "\n")
+                
+                            scores.append(score)
+                            labels.append(int(speaker == test_speaker))       
+
+        scores = torch.tensor(scores)
+        labels = torch.tensor(labels)
+        assert not scores.isnan().any()
+        assert not labels.isnan().any()
+
+        return scores, labels
+
     def training_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
         out = self(x)
