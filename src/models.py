@@ -921,10 +921,9 @@ def conv3x3(
     )
 
 
-class SelfAttentionPooling(nn.Module):
-    """Implementation of Self Attention Pooling (SAP) as
-    described in [1]. We used GELU instead of tanh as
-    non-linearity.
+class SelfAttentivePooling(nn.Module):
+    """Implementation of Self Attentive Pooling (SAP) as
+    described in [1].
 
     References
     ----------
@@ -937,19 +936,19 @@ class SelfAttentionPooling(nn.Module):
         self,
         n_mels
     ) -> None:
-        super(SelfAttentionPooling, self).__init__()
+        super(SelfAttentivePooling, self).__init__()
         self.linear = nn.Linear(n_mels, n_mels)
         self.attention = nn.Parameter(
             torch.FloatTensor(size=(n_mels, 1))
         )
-        self.gelu = nn.GELU()
+        self.tanh = nn.Tanh()
         self.softmax = nn.Softmax2d()
 
         nn.init.xavier_normal_(self.attention)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = x.permute(0,3,1,2)
-        h = self.gelu(self.linear(y))
+        h = self.tanh(self.linear(y))
         mul = torch.matmul(h, self.attention)
         w = self.softmax(mul)
         w = w.permute(0,2,3,1)
@@ -1112,7 +1111,7 @@ class ResNet34(SpeakerRecognitionModel):
         self.conv4_x = self._make_sequence(256, num_blocks=6, stride=2)
         self.conv5_x = self._make_sequence(512, num_blocks=3, stride=2)
         # self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.pool1 = SelfAttentionPooling(3)
+        self.pool1 = SelfAttentivePooling(3)
         self.pool2 = VarSelfAttentionPooling(512, 3)
         # self.sp = StatsPoolingLayer()
         self.embeddings = nn.Linear(512, self.embeddings_dim)

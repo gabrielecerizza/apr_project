@@ -13,7 +13,7 @@
 
 \title{Speaker Recognition in the Wild\\}
 
-\author{\IEEEauthorblockN{ Gabriele Cerizza}
+\author{\IEEEauthorblockN{Gabriele Cerizza}
 \IEEEauthorblockA{\textit{Department of Computer Science} \\
 \textit{University of Milan}\\
 Milan, Italy \\
@@ -23,20 +23,142 @@ gabriele.cerizza@studenti.unimi.it}
 \maketitle
 
 \begin{abstract}
-Speaker recognition is the task of recognizing a person from their utterances, either to classify or to verify the identity of a given speaker. Text independent  
+Speaker recognition is the task of recognizing a person from their utterances, either to classify or to verify the identity of a given speaker. In this work, we compare the performance of different neural network models on this task, using a dataset collected under real-world conditions.  
 \end{abstract}
 
 \begin{IEEEkeywords}
-component, formatting, style, styling, insert
+speaker recognition, speaker identification, speaker verification, convolutional neural networks, attention
 \end{IEEEkeywords}
 
 \section{Introduction}
-This document is a model and instructions for \LaTeX.
-Please observe the conference page limits. 
 
-\section{Ease of Use}
+A challenging task in the field of audio pattern recognition is the one referred to as ``speaker recognition''. This task includes two problems: speaker identification and speaker verification~\cite{kabir2021survey,hajibabaei2018unified,chung2020defence}. 
 
-\subsection{Maintaining the Integrity of the Specifications}
+Speaker identification is a closed-set problem in which the model has to identify the person to whom a given utterance belongs. The model is trained on utterances from each of the speakers, rendering this a classification problem. Speaker verification aims at validating whether a given utterance belongs to a given person. In academic research, this is treated as an open-set problem in which the model has to determine if two utterances belong to the same person. During evaluation, the model is presented with pairs of utterances belonging to speakers not included in the training set.
+
+Speaker recognition can be further categorized as text-dependent or text-independent, in relation to the fact that the content of the utterances is fixed or not.
+
+Speaker recognition applications encompass security control, online banking, retrieval, forensic tools and human computer interaction systems. A speaker recognition model can be also employed as part of a speaker diarization pipeline \cite{chung2018voxceleb2,park2022review}.
+
+The focus of our research is text-independent speaker recognition. We compare the performance of different deep neural network models, which allow us to tackle both speaker identification and verification at the same time. To train and evaluate the models, we used data from VoxCeleb1~\cite{nagrani2020voxceleb}. These data were collected ``in the wild'', that is under real-world conditions where speech segments may be affected by the environment, like background noise and cross-talk.
+
+The remainder of the report is organized as follows:
+
+
+\section{Related works}
+
+\subsection{Model Architectures}
+
+Speaker recognition methods have been widely studied in literature. In particular, the interest in the field has grown in recent years, owing to the availability of large-scale datasets and to the increased computational power afforded by GPUs, which allows us to train deep neural networks.
+
+Over the years, a particular approach became predominant. The idea is to produce fixed-sized feature representations of speech segments, which can then be processed by a classifier or directly compared. This approach was pioneered by i-vectors, obtained by joint factor analysis~\cite{dehak2011ivectors}. With the advent of neural networks, better speaker representations were obtained as the output of a bottleneck layer trained for classification. These speaker representations, known as embeddings, proved to be more robust with respect to acoustic conditions and more discriminating with respect to speakers, thus yielding more accurate results. Examples of such neural embeddings include d-vectors~\cite{variani2014dvectors} and, more recently, x-vectors~\cite{snyder2017deep,snyder2018xvectors}.
+
+To perform speaker recognition with neural networks, an architecture composed of three blocks is traditionally employed~\cite{okabe2018asp}. The first block receives as input acoustic features such as MFCCs or Mel spectrograms and produces frame-level features. Typical layers of this block include CNN, Time-Delay Neural Network (TDNN)~\cite{peddinti2015timedelay,waibel1989timedelay}, mostly implemented as dilated convolution, and recurrent neural networks such as Long Short-Term Memory (LSTM). Popular architectures for the first block are borrowed from the image recognition domain, such as ResNet~\cite{he2016resnet}, VGG~\cite{simonyan2014vgg} and, recently, visual transformers like CoAtNet~\cite{dai2021coatnet}. 
+
+The second block is required to aggregate the frame-level features, which have varying length depending on the length of the speech segment, into fixed dimensional utterance-level features. This block usually consists in a fully-connected layer stacked on top of a pooling layer. Many different pooling layers have been developed: from simply taking the average over the temporal dimension to sophisticated attention mechanisms~\cite{cai2018exploring}. The output of this block is the aforementioned embedding.
+
+Finally, the third block contains the loss function, possibly preceded by a fully-connected layer projecting the embedding into a dimension whose size is equal to the number of speakers. Since the network is usually trained for multi-class classification, the loss function mixes and matches a plethora of Softmax variants with Cross-entropy loss.
+
+It is worth to note that models, especially in competitions like the VoxCeleb Speaker Recognition Challenge\footnote{https://www.robots.ox.ac.uk/$\sim$vgg/data/voxceleb/competition2021.html}, are often combined using fusion or ensemble techniques.
+
+\subsection{Speaker Verification Peculiarities}
+
+\paragraph{Scoring}While neural networks trained for speaker verification are fundamentally identical to those trained for speaker identification, a further step is necessary to perform speaker verification. During evaluation, embeddings are extracted for each utterance. These embeddings are then compared pairwise. These comparisons may be carried out with backend systems like Probabilistic Linear Discriminant Analysis (PLDA), which can be trained on a different dataset with respect to the neural network~\cite{snyder2017deep}. However, more recently, neural embeddings have been compared simply by way of cosine similarity, achieving gains in performance in relation to PLDA~\cite{cai2018exploring}.
+
+\paragraph{Score normalization}To reduce within trial variability and produce well calibrated and reliable scores, normalization is often applied. A popular score normalization technique is ``Adaptive S-Norm'' (AS-Norm)~\cite{matejka2017asnorm,cumani2011comparison}.
+
+Let $s(\cdot,\cdot)$ be the score between two embeddings, $\mathcal{E}^{\text{top}}_e$ be the cohort of the $N$ closest embeddings to the enrollment utterance $e$ and $\mathcal{E}^{\text{top}}_t$ be the cohort of the $N$ closest embeddings to the test utterance $t$. Furthermore, let 
+\begin{equation}
+    S_e(\mathcal{E}^{\text{top}}_e) = \{(s,\varepsilon)\}_{\forall\varepsilon \in \mathcal{E}^{\text{top}}_e}~,
+    S_e(\mathcal{E}^{\text{top}}_t) = \{(s,\varepsilon)\}_{\forall\varepsilon \in \mathcal{E}^{\text{top}}_t}~. 
+\end{equation}
+The normalized score is computed as
+\begin{multline}
+    s(e,t) = \frac{1}{2} \cdot \Bigg(\frac{s(e,t) - \mu(S_e(\mathcal{E}^{\text{top}}_e))}{\sigma(S_e(\mathcal{E}^{\text{top}}_e))} + \\
+    \frac{s(e,t) - \mu(S_e(\mathcal{E}^{\text{top}}_t))}{\sigma(S_e(\mathcal{E}^{\text{top}}_t))}\Bigg)
+    ~.
+\end{multline}
+
+\paragraph{Metrics}Once the similarity score between each pair of embeddings has been computed, we need to evaluate how good the model is in deciding whether the speech segments belong to the same speaker. To this end, various metrics have been proposed. Two notable metrics are Equal Error Rate (EER) and Minimum Detection Cost Function (minDCF)~\cite{brummer2013bosaris,nist2018}. 
+
+EER is defined as the point on the Receiver Operating Characteristic (ROC) curve in which $P_{\text{miss}} = P_{\text{fa}}$, where $P_{\text{miss}}$ is the ratio of samples belonging to the same speaker classified as dissimilar and $P_{\text{fa}}$ is the ratio of dissimilar samples classified as belonging to the same speaker. EER can be considered as a summary of the ROC curve.
+
+On the other hand, minDCF is derived from the normalization of the following weighted sum of misses and false-alarm error probabilities for a given decision threshold $\theta$:
+\begin{equation}
+    C_{\text{miss}} \times P_{\text{target}} \times P_{\text{miss}}(\theta) +
+    C_{\text{fa}} \times (1 - P_{\text{target}}) \times P_{\text{fa}}(\theta) ,
+\end{equation}
+where $C_{\text{miss}}$ and $C_{\text{fa}}$ are respectively the cost of misses and false-alarms and $P_{\text{target}}$ is the \textit{a priori} probability of the specific speaker. The costs are usually fixed to 1. We refer to~\cite{nist2018} for the mathematical details of the normalization operation.
+
+\paragraph{Pairwise Losses}Another difference between speaker identification and recognition lies in the choice of loss functions. Some models employ pairwise losses such as triplet loss or contrastive loss~\cite{cai2018exploring,chung2019delving}. The drawback of these losses is that they are notoriously difficult to train with and require careful fine-tuning~\cite{nagrani2020voxceleb}. Most state-of-the-art models now adopt Softmax variants, discussed below.
+
+\subsection{Pooling Layers}
+
+\paragraph{Temporal Average Pooling (TAP)}This is the simplest pooling, which takes the mean of the features along the time domain~\cite{cai2018exploring,chung2019delving}. In this way, all frames equally contribute to the utterance representation.
+
+\paragraph{Self-Attentive Pooling (SAP)}Under the assumption that not all frames are equally informative, SAP uses an attention mechanism to learn which weight to assign to each frame. The frames are then multiplied by their respective weights and summed to obtain the utterance-level representation~\cite{cai2018exploring}.
+
+More formally, let $W$, $b$ and $\mu$ be learnable parameters. Additionally, let $\{x_1,\dots,x_T\}$ be the time domain features of a given utterance. We first compute the attention weights $w_t$ as
+\begin{equation}
+    h_t = \text{tanh}(Wx_t + b)
+\end{equation}
+\begin{equation}
+    w_t = \frac{\text{exp}(h_t^T\mu)}{\sum_{t=1}^T\text{exp}(h_t^T\mu)}~.
+\end{equation}
+Finally, we take the sum
+\begin{equation}
+    e = \sum_{t=1}^Tw_tx_t~.
+\end{equation}
+
+\paragraph{Other}A number of notable other pooling layers have been proposed. One of them is Self Multi-Head Attention Pooling, which splits the input to the layer into $N$ sequences, applies SAP to each of them and then concatenates the results~\cite{india2019selfmha}. Another one is Attentive Statistics Pooling (ASP), which combines SAP with mean and standard deviation statistics~\cite{okabe2018asp}.
+
+\subsection{Softmax for Speaker Recognition}
+
+Neural networks may be effectively trained with Softmax and Cross-entropy loss, which are traditionally employed for classification problems. 
+
+The \textit{caveat} is that Softmax penalizes only classification errors, without enforcing intra-class compactness and inter-class separation~\cite{chung2020defence}. This makes Softmax unsuited for learning discriminative features, which map utterances belonging to the same speaker close to each other and far from utterances belonging to other speakers~\cite{liu2019large}. To remedy this, angular based losses have been developed, originally in the context of face recognition, and have now become widespread in the speaker recognition field, reportedly achieving an improved performance.
+
+This class of loss functions is chiefly represented by Angular Additive Margin Softmax (AAM Softmax or ArcFace)~\cite{deng2019arcface}. This function introduces an angular margin penalty $m$, which forces the cosine similarity between the sample and its true class to be $m$ times more than the cosine similarity between the sample and wrong classes. This difference is also multiplied by a scale factor $s$, which prevents the gradient from getting too small~\cite{chung2020defence,hajibabaei2018unified}.
+
+Recently, Sub-center AAM Softmax has been proposed~\cite{deng2020subarcface}. This loss function relaxes the intra-class compactness constraint by incorporating $K$ sub-centers for each class and forcing each sample to be close to any one of the positive sub-centers. It is expected that one dominant sub-center will contain the majority of "clean" data belonging to the class, while the hard and noisy sample will gravitate towards the non-dominant sub-centers. As such, Sub-center AAM Softmax is more robust to noise.
+
+
+\section{Data and Features}
+
+\subsection{Dataset}
+
+\subsection{Features}
+
+\subsection{Augmentation}
+
+\subsection{K-Means Clustering}
+
+\section{Models and Training}
+
+\subsection{Models}
+
+\subsection{Training}
+
+\section{Results}
+
+\section{Conclusion}
+
+
+LAS encoder repurposed
+
+first slide: speaker id, speaker ver: 1) imagine with utterance and several heads, who is the speaker? 2) two utterances: same speaker?
+
+regarded
+predominant 
+devise
+
+paradigm was to construct an utterance specific representation  
+
+Neural network models pipeline composed of three steps:
+
+
+
+
 
 The IEEEtran class file is used to format your paper and style the text. All margins, 
 column widths, line spaces, and text fonts are prescribed; please do not 
@@ -49,7 +171,7 @@ Please do not revise any of the current designations.
 \section{Prepare Your Paper Before Styling}
 Before you begin to format your paper, first write and save the content as a 
 separate text file. Complete all content and organizational editing before 
-formatting. Please note sections \ref{AA}--\ref{SCM} below for more information on 
+formatting. Please note sections  below for more information on 
 proofreading, spelling and grammar.
 
 Keep your text and graphic files separate until after the text has been 
@@ -83,8 +205,7 @@ a+b=\gamma\label{eq}
 
 Be sure that the 
 symbols in your equation have been defined before or immediately following 
-the equation. Use ``\eqref{eq}'', not ``Eq.~\eqref{eq}'' or ``equation \eqref{eq}'', except at 
-the beginning of a sentence: ``Equation \eqref{eq} is . . .''
+the equation. Use 
 
 \subsection{\LaTeX-Specific Advice}
 
@@ -137,7 +258,7 @@ surrounding equation.
 \item There is no period after the ``et'' in the Latin abbreviation ``et al.''.
 \item The abbreviation ``i.e.'' means ``that is'', and the abbreviation ``e.g.'' means ``for example''.
 \end{itemize}
-An excellent style manual for science writers is \cite{b7}.
+An excellent style manual for science writers is.
 
 \subsection{Authors and Affiliations}
 \textbf{The class file is designed for, but not limited to, six authors.} A 
@@ -210,10 +331,9 @@ acknowledgments in the unnumbered footnote on the first page.
 
 \section*{References}
 
-Please number citations consecutively within brackets \cite{b1}. The 
-sentence punctuation follows the bracket \cite{b2}. Refer simply to the reference 
-number, as in \cite{b3}---do not use ``Ref. \cite{b3}'' or ``reference \cite{b3}'' except at 
-the beginning of a sentence: ``Reference \cite{b3} was the first $\ldots$''
+Please number citations consecutively within brackets . Refer simply to the reference 
+number, as in  except at 
+the beginning of a sentence: ``Reference was the first $\ldots$''
 
 Number footnotes separately in superscripts. Place the actual footnote at 
 the bottom of the column in which it was cited. Do not put footnotes in the 
@@ -221,23 +341,17 @@ abstract or reference list. Use letters for table footnotes.
 
 Unless there are six authors or more give all authors' names; do not use 
 ``et al.''. Papers that have not been published, even if they have been 
-submitted for publication, should be cited as ``unpublished'' \cite{b4}. Papers 
-that have been accepted for publication should be cited as ``in press'' \cite{b5}. 
+submitted for publication, should be cited as ``unpublished'' . 
 Capitalize only the first word in a paper title, except for proper nouns and 
 element symbols.
 
 For papers published in translation journals, please give the English 
-citation first, followed by the original foreign-language citation \cite{b6}.
+citation first, followed by the original foreign-language citation 
+\cite{kabir2021}
 
-\begin{thebibliography}{00}
-\bibitem{b1} G. Eason, B. Noble, and I. N. Sneddon, ``On certain integrals of Lipschitz-Hankel type involving products of Bessel functions,'' Phil. Trans. Roy. Soc. London, vol. A247, pp. 529--551, April 1955.
-\bibitem{b2} J. Clerk Maxwell, A Treatise on Electricity and Magnetism, 3rd ed., vol. 2. Oxford: Clarendon, 1892, pp.68--73.
-\bibitem{b3} I. S. Jacobs and C. P. Bean, ``Fine particles, thin films and exchange anisotropy,'' in Magnetism, vol. III, G. T. Rado and H. Suhl, Eds. New York: Academic, 1963, pp. 271--350.
-\bibitem{b4} K. Elissa, ``Title of paper if known,'' unpublished.
-\bibitem{b5} R. Nicole, ``Title of paper with only first word capitalized,'' J. Name Stand. Abbrev., in press.
-\bibitem{b6} Y. Yorozu, M. Hirano, K. Oka, and Y. Tagawa, ``Electron spectroscopy studies on magneto-optical media and plastic substrate interface,'' IEEE Transl. J. Magn. Japan, vol. 2, pp. 740--741, August 1987 [Digests 9th Annual Conf. Magnetics Japan, p. 301, 1982].
-\bibitem{b7} M. Young, The Technical Writer's Handbook. Mill Valley, CA: University Science, 1989.
-\end{thebibliography}
+
+\bibliographystyle{IEEEtran}
+\bibliography{bibtex_entries}
 \vspace{12pt}
 \color{red}
 IEEE conference templates contain guidance text for composing and formatting conference papers. Please ensure that all template text is removed from your conference paper prior to submission to the conference. Failure to remove the template text from your paper may result in your paper not being published.
