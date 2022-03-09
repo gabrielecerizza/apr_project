@@ -535,8 +535,9 @@ def kmeans_plot(
     num_speakers: int = 8
 ):
     sns.set_theme()
-    sns.set_style("ticks")
+    sns.set(style="ticks", font="Times New Roman")
     sns.set_context("paper")
+    plt.rcParams["font.family"] = "Times New Roman"
 
     df = pd.read_csv(
         csv_base_path + f"subset_features_{num_secs}.csv"
@@ -592,7 +593,7 @@ def kmeans_plot(
         sharey=True
     )
     fig.suptitle("Test set label distribution")
-    ax1.set_title("K-means clusters")
+    ax1.set_title("K-Means clusters")
     ax2.set_title("Ground truth")
 
     for label in u_preds:

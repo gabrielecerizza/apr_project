@@ -1056,14 +1056,14 @@ class SEResNetBlock(ResNetBlock):
             n_channels=self.out_channels,
             reduction_ratio=se_ratio
         )
-        self.gelu = nn.GELU()
+        self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
 
         out = self.conv1(x)
         out = self.bn1(out)
-        out = self.gelu(out)
+        out = self.relu(out)
         out = self.conv2(out)
         out = self.bn2(out)
         out = self.se(out)
@@ -1072,7 +1072,7 @@ class SEResNetBlock(ResNetBlock):
             identity = self.downsample(x)
 
         out += identity
-        out = self.gelu(out)
+        out = self.relu(out)
 
         return out
 
@@ -1483,6 +1483,117 @@ class ResNet34SE(SpeakerRecognitionModel):
         x = torch.flatten(x, 1)
         """
         # x = self.sp(x)
+        x = self.embeddings(x)
+
+        return x
+    
+    def _make_sequence(
+        self,
+        out_channels: int,
+        num_blocks: int,
+        stride: int = 1
+    ):
+        downsample = None
+
+        # downsample when we increase the dimension, using
+        # the 1x1 convolution option, as described in the
+        # ResNet paper.
+        if stride != 1 or self.current_channels != out_channels:
+            downsample = nn.Sequential(
+                conv1x1(self.current_channels, out_channels, stride),
+                nn.BatchNorm2d(out_channels),
+            )
+
+        layers = []
+        layers.append(
+            SEResNetBlock(
+                in_channels=self.current_channels, 
+                out_channels=out_channels, 
+                stride=stride, 
+                downsample=downsample,
+                se_ratio=8
+            )
+        )
+        self.current_channels = out_channels
+        for _ in range(1, num_blocks):
+            layers.append(
+                SEResNetBlock(
+                    in_channels=self.current_channels,
+                    out_channels=out_channels,
+                    se_ratio=8
+                )
+            )
+
+        return nn.Sequential(*layers)
+
+
+class ResNet34SEV2(SpeakerRecognitionModel):
+    """ResNet34 model, as described in [1]. The
+    implementation is a simplified and slightly
+    modified version of the official PyTorch 
+    Vision ResNet.
+
+    References
+    ----------
+        [1] K. He, X. Zhang, S. Ren and J. Sun, "Deep 
+        Residual Learning for Image Recognition", 2016 IEEE 
+        Conference on Computer Vision and Pattern Recognition 
+        (CVPR), 2016, pp. 770-778.
+    """
+    def __init__(self, n_mels=80, **kwargs) -> None:
+        super(ResNet34SEV2, self).__init__(**kwargs)
+
+        self.current_channels = 32
+        self.attn_expansion = int(n_mels / 8)
+
+        self.conv1 = nn.Conv2d(
+            1, 
+            self.current_channels, 
+            kernel_size=7,
+            stride=2,
+            padding=3,
+            bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(self.current_channels)
+        self.relu = nn.ReLU()
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.conv2_x = self._make_sequence(32, num_blocks=3)
+        self.conv3_x = self._make_sequence(64, num_blocks=4, stride=2)
+        self.conv4_x = self._make_sequence(128, num_blocks=6, stride=2)
+        self.conv5_x = self._make_sequence(256, num_blocks=3, stride=2)
+        self.attn_pool = SelfAttentivePooling(self.attn_expansion)
+        
+        self.embeddings = nn.Linear(
+            self.current_channels * self.attn_expansion, 
+            self.embeddings_dim
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(
+                    m.weight, 
+                    mode="fan_out", 
+                    nonlinearity="relu"
+                )
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        self._set_optimizers()
+        self._set_hyperparams()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.conv2_x(x)
+        x = self.conv3_x(x)
+        x = self.conv4_x(x)
+        x = self.conv5_x(x)
+        x = self.attn_pool(x)
         x = self.embeddings(x)
 
         return x

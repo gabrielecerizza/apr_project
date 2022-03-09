@@ -7,6 +7,7 @@
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
+\usepackage{multirow}
 \def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
     T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
 \begin{document}
@@ -79,11 +80,11 @@ The normalized score is computed as
     ~.
 \end{multline}
 
-\paragraph{Metrics}Once the similarity score between each pair of embeddings has been computed, we need to evaluate how good the model is in deciding whether the speech segments belong to the same speaker. To this end, various metrics have been proposed. Two notable metrics are Equal Error Rate (EER) and Minimum Detection Cost Function (minDCF)~\cite{brummer2013bosaris,nist2018}. 
+\paragraph{Metrics}Once the similarity score between each pair of embeddings has been computed, we need to evaluate how good the model is in deciding whether the speech segments belong to the same speaker. To this end, various metrics have been proposed. Two notable metrics are Equal Error Rate (EER) and Minimum Detection Cost Function (MinDCF)~\cite{brummer2013bosaris,nist2018}. 
 
 EER is defined as the point on the Receiver Operating Characteristic (ROC) curve in which $P_{\text{miss}} = P_{\text{fa}}$, where $P_{\text{miss}}$ is the ratio of samples belonging to the same speaker classified as dissimilar and $P_{\text{fa}}$ is the ratio of dissimilar samples classified as belonging to the same speaker. EER can be considered as a summary of the ROC curve.
 
-On the other hand, minDCF is derived from the normalization of the following weighted sum of misses and false-alarm error probabilities for a given decision threshold $\theta$:
+On the other hand, MinDCF is derived from the normalization of the following weighted sum of misses and false-alarm error probabilities for a given decision threshold $\theta$:
 \begin{equation}
     C_{\text{miss}} \times P_{\text{target}} \times P_{\text{miss}}(\theta) +
     C_{\text{fa}} \times (1 - P_{\text{target}}) \times P_{\text{fa}}(\theta) ,
@@ -118,33 +119,147 @@ Neural networks may be effectively trained with Softmax and Cross-entropy loss, 
 
 The \textit{caveat} is that Softmax penalizes only classification errors, without enforcing intra-class compactness and inter-class separation~\cite{chung2020defence}. This makes Softmax unsuited for learning discriminative features, which map utterances belonging to the same speaker close to each other and far from utterances belonging to other speakers~\cite{liu2019large}. To remedy this, angular based losses have been developed, originally in the context of face recognition, and have now become widespread in the speaker recognition field, reportedly achieving an improved performance.
 
-This class of loss functions is chiefly represented by Angular Additive Margin Softmax (AAM Softmax or ArcFace)~\cite{deng2019arcface}. This function introduces an angular margin penalty $m$, which forces the cosine similarity between the sample and its true class to be $m$ times more than the cosine similarity between the sample and wrong classes. This difference is also multiplied by a scale factor $s$, which prevents the gradient from getting too small~\cite{chung2020defence,hajibabaei2018unified}.
+This class of loss functions is chiefly represented by Angular Additive Margin Softmax (AAM Softmax or ArcFace)~\cite{deng2019arcface}. This function introduces an angular margin penalty $m$, which forces the cosine similarity between the sample and its true class to be $m$ more than the cosine similarity between the sample and wrong classes. This difference is also multiplied by a scale factor $s$, which prevents the gradient from getting too small~\cite{chung2020defence,hajibabaei2018unified}.
 
-Recently, Sub-center AAM Softmax has been proposed~\cite{deng2020subarcface}. This loss function relaxes the intra-class compactness constraint by incorporating $K$ sub-centers for each class and forcing each sample to be close to any one of the positive sub-centers. It is expected that one dominant sub-center will contain the majority of "clean" data belonging to the class, while the hard and noisy sample will gravitate towards the non-dominant sub-centers. As such, Sub-center AAM Softmax is more robust to noise.
-
+Recently, Sub-center AAM Softmax (SC AAM Softmax) has been proposed~\cite{deng2020subarcface}. This loss function relaxes the intra-class compactness constraint by incorporating $K$ sub-centers for each class and forcing each sample to be close to any one of the positive sub-centers. It is expected that one dominant sub-center will contain the majority of ``clean'' data belonging to the class, while the hard and noisy samples will gravitate towards the non-dominant sub-centers. As such, SC AAM Softmax is more robust to noise.
 
 \section{Data and Features}
 
 \subsection{Dataset}
 
+For our study, we elected to use the VoxCeleb1 dataset, which is characterized by speech segments collected ``in the wild'' from YouTube~\cite{nagrani2020voxceleb,chung2018voxceleb2,chung2019delving}. This dataset is particularly challenging due to the fact that the samples present both extrinsic and intrinsic variations. Extrinsic variations include background noise, chatter, music, laughter, cross-talk and varying room acoustics (from small indoor rooms to stadiums). Intrinsic variations concern the heterogeneity of age, gender and nationality of the speakers. 
+
+The VoxCeleb1 dataset consists of over 150,000 utterances from 1,251 celebrities. However, due to hardware constraints, we were unable to take advantage of the full dataset and had to confine our experiments to a randomly sampled subset. We extracted all the utterances of 100 randomly chosen speakers, while retaining the gender proportions to guarantee the representativeness of the sample. We kept the official splits for the training, validation and test sets provided for identification. To evaluate the verification capabilities of the models, we used utterances from 10 further speakers not present in the subset previously described. Some statistics on both the dataset and the subsets are provided in Table~\ref{tab:dataset}.
+
+\begin{table}[htbp]
+    \caption{VoxCeleb1 Dataset Statistics}
+    \begin{center}
+        \begin{tabular}{|c|c|c|c|c|}
+        \cline{3-5}
+        \multicolumn{2}{c|}{\textbf{}} & \textbf{Full Dataset} & \textbf{Identif. Set} & \textbf{Verif. Set}\\
+        \hline
+        \multicolumn{2}{|c|}{\textbf{Speakers No.}} & 1,251 & 100 & 10\\
+        \hline
+        \multicolumn{2}{|c|}{\textbf{Samples No.}} & 152,123 & 12,123 & 1,896 \\
+        \hline
+        \multirow{2}{*}{\textbf{Gender}} & \textit{Male} & 0.55 & 0.51 & 0.50 \\
+        & \textit{Female} & 0.55 & 0.52 & 0.50 \\
+        \hline
+        \multirow{4}{*}{\textbf{Nationality}$^{\mathrm{a}}$} & \textit{USA} & 0.65 & 0.52 & 0.41 \\
+        & \textit{UK} & 0.21 & 0.12 & 0.32 \\
+        & \textit{Italy} & 0.01 & 0.05 & 0.07 \\
+        & \textit{Russia} & 0.07 & 0.02 & 0.02 \\
+        \hline
+        \multirow{2}{*}{\textbf{Seconds}} & \textit{Mean} & 8.12 & 7.59 & 5.67 \\
+        & \textit{Std} & 2.55 & 3.55 & 4.55 \\
+        \hline
+        \multicolumn{4}{l}{$^{\mathrm{a}}$Only the four most frequent nationalities are listed.}
+        \end{tabular}
+        \label{tab:dataset}
+    \end{center}
+\end{table}
+
 \subsection{Features}
 
-\subsection{Augmentation}
+As input features to our models, we extracted 80-dimensional log Mel spectrograms with a window length of 25 ms (Hamming window) and a frame-shift of 10 ms, to which we applied cepstral mean normalization at the instance level. As noted in the literature, MFCCs are ill suited for the VoxCeleb1 dataset, since they degrade with real-world noise and they lack speaker discriminating features like pitch information~\cite{nagrani2020voxceleb}.
+
+Considering the ``in the wild'' nature of the dataset, in order to improve generalization, we also applied data augmentation. We performed four types of offline data augmentation. For each training sample we
+\begin{enumerate}
+    \item perturbed the waveform by a speed factor of 0.9 or 1.1, randomly chosen;
+    \item added background noise, randomly chosen from the MUSAN dataset~\cite{snyder2015musan}, with a signal-to-noise ratio DB between 0 and 15;
+    \item added babble effect by superimposing a speech track randomly chosen from MUSAN over the waveform, with a signal-to-noise ratio DB between 15 and 20;
+    \item added reverberation by using the \texttt{pedalboard} library from Spotify\footnote{https://github.com/spotify/pedalboard}.
+\end{enumerate}
+As a consequence, we obtained a total of 59,140 training samples. Furthermore, we chained SpecAugment~\cite{park2019specaug} online data augmentation by randomly masking 0 to 5 frames in the time domain and 0 to 10 frequency bands. Validation and test samples were left untouched.
 
 \subsection{K-Means Clustering}
+
+For a better understanding of the complexity of the task, we show in Fig.~\ref{fig:k_means} the distribution of clusters identified by K-Means on the test set, after learning the location of the centers on the training set. To obtain a bidimensional representation of the data, we used Principal Component Analysis (PCA), again trained solely on the training set. Compared with the actual distribution of ground truth labels, it is clear how challenging the task is.
+
+\begin{figure*}[htbp]
+    \centerline{\includegraphics[width=0.7\textwidth]{img/k_means.png}}
+    \caption{Comparison between K-Means clusters and ground truth labels on the speaker identification test set.}
+    \label{fig:k_means}
+\end{figure*}
 
 \section{Models and Training}
 
 \subsection{Models}
 
-\subsection{Training}
+We compared three different neural network models, which we describe below.
+
+\paragraph{ResNet34-SE}
+
+The first model is based on the ResNet34 architecture~\cite{he2016resnet}, modified to accept Mel spectrograms as input. Following the approach described in~\cite{heo2020clova,chung2020defence}, we halved the number of channels in the convolutional layers and adopted SAP to aggregate features in the time domain. Additionally, we introduced Squeeze-and-Excitation (SE) layers~\cite{jie2020squeeze}, which proved to be good for speaker verification according to~\cite{zhang2021beijing}. For the loss function, we used SC AAM Softmax.
+
+\paragraph{LAS-MHA}
+
+Taking inspiration from the Listen, Attend and Spell (LAS)~\cite{irie2019las} model for sequence-to-sequence speech recognition and from the Multi-Head Attention (MHA)~\cite{vaswani2017attention} employed in language modeling, we devised a new architecture. We stacked a MHA layer with 8 heads on top of the encoder part of the LAS model, composed of CNN layers followed by bidirectional LSTM layers. We used SC AAM Softmax during training.
+
+\paragraph{EfficientNetV2}
+
+Many state-of-the-art architectures in speaker recognition have been borrowed from the computer vision domain. For this reason, we decided to use EfficientNetV2~\cite{tan2021efficientnetv2}, a recently developed model that performs well in image classification while being optimized for training speed and parameter efficiency. EfficientNetV2 is characterized by its use of depthwise convolution in place of traditional convolution, which allows to reduce the number of parameters. EfficientNetV2 was trained with standard Softmax loss.
+
+\subsection{Training and Scoring}
+
+Training was carried out in two steps, according to the Large Margin Fine-Tuning strategy~\cite{thienpondt2021voxsrc}. We first trained the models on random crops of the utterances with a length of 3 seconds (eventually padded), to avoid overfitting. When the models stopped learning, we fine-tuned them with random crops of 6 seconds. We also increased the margin $m$ of SC AAM Softmax from 0.1 to 0.3 and the scale $s$ from 15 to 30. Increasing the margin makes training harder, but leads to better embeddings. Additionally, we decreased the number of sub-centers from 3 to 1. The models were evaluated against 6 seconds random crops.
+
+We used 256 dimensional embeddings, which were found to be the best for identification in~\cite{hajibabaei2018unified}.
+
+For speaker verification, we compared the embeddings by cosine similarity and then normalized the scores with AS-Norm, using cohorts of size 100. The parameters of EER were defined as stated in~\cite{nist2018}.
 
 \section{Results}
 
+Considering the fact that we used a subset of VoxCeleb1 for both training and test set, a direct comparison with models described in literature is not possible. Besides, researchers often trained their models on the much larger VoxCeleb2 dataset before evaluating them on the VoxCeleb1 test set. For a better understanding of the performance of the models, we therefore added the kind of training set to the results shown in Table. For literature models we reported the verification results of the original (O) verification split.
+
+\begin{table*}[htbp]
+    \caption{VoxCeleb1 Test Set Results}
+    \begin{center}
+        \begin{tabular}{|c|c|c|c|c|c|c|c|}
+        \hline
+        \textbf{Model} & \textbf{Year} & \textbf{Training Set} &  \textbf{Top1 Acc.} & \textbf{Top5 Acc.} & \textbf{F1 Score} & \textbf{EER(\%)} & \textbf{MinDCF}$^{\mathrm{a}}$\\
+        \hline
+        Cai et al.~\cite{cai2018exploring} & 2018 & VoxCeleb1 & 89.9 & 95.7 & - & - & - \\
+        Cai et al.~\cite{cai2018exploring} & 2018 & VoxCeleb1 & - & - & - & 5.27 & 0.439 \\
+        Cai et al.~\cite{cai2018exploring} & 2018 & VoxCeleb1 & - & - & - & 4.46 & 0.577 \\
+        Chung et al.~\cite{chung2018voxceleb2} & 2018 & VoxCeleb1 & - & - & - & 7.8 & 0.71 (0.01) \\
+        Chung et al.~\cite{chung2018voxceleb2} & 2018 & VoxCeleb2 & - & - & - & 3.95 & 0.429 (0.01) \\
+        Okabe et al.~\cite{okabe2018asp} & 2018 & VoxCeleb1 & - & - & - & 3.85 & 0.406 (0.01) \\
+        Hajibabaei, Dai~\cite{hajibabaei2018unified} & 2018 & VoxCeleb1 & 94.6 & 98.1 & - & 4.69 & 0.453 (0.01) \\
+        Hajibabaei, Dai~\cite{hajibabaei2018unified} & 2018 & VoxCeleb1 & 92.8 & 97.5 & - & 4.30 & 0.413 (0.01) \\
+        Snyder et al.~\cite{snyder2018xvectors}$^{\mathrm{b}}$ & 2018 & VoxCeleb2 & - & - & - & 3.10 & 0.33 (0.01) \\
+        Xie et al.~\cite{xie2019utterance} & 2019 & VoxCeleb2 & - & - & - & 3.22 & - \\
+        Chung et al.~\cite{chung2019delving} & 2019 & VoxCeleb1 & 89.00 & 96.15 & - & 5.37 & - \\
+        Chung et al.~\cite{chung2019delving} & 2019 & VoxCeleb1 & 89.00 & 95.94 & - & 5.26 & - \\
+        Chung et al.~\cite{chung2020defence} & 2020 & VoxCeleb2 & - & - & - & 2.21 & - \\
+        Desplanques et al.~\cite{desplanques2020ecapa} & 2020 & VoxCeleb2 & - & - & - & 0.87 & 0.1066 (0.01) \\
+        Nagrani et al.~\cite{nagrani2020voxceleb} & 2020 & VoxCeleb2 & - & - & - & 2.87 & 0.31 (0.01) \\
+        Xiang~\cite{xiang2020xx205} & 2020 & VoxCeleb2 & - & - & - & 0.7712 & 0.0774 (0.01) \\
+        Xiang~\cite{xiang2020xx205} & 2020 & VoxCeleb2 & - & - & - & 0.8350 & 0.0638 (0.01) \\
+        Hajavi, Etemad~\cite{hajavi2021siamese} & 2021 & VoxCeleb1 & - & - & - & 3.14 & - \\
+        Thienpondt et al.~\cite{thienpondt2021voxsrc} & 2021 & VoxCeleb2 & - & - & - & 0.64 & 0.0700 (0.01) \\
+        Thienpondt et al.~\cite{thienpondt2021voxsrc} & 2021 & VoxCeleb2 & - & - & - & 0.56 & 0.0743 (0.01) \\
+        Zhao et al.~\cite{zhao2021speakin} & 2021 & VoxCeleb2 & - & - & - & 0.5249 & 0.0498 (0.01) \\
+        Zhao et al.~\cite{zhao2021speakin} & 2021 & VoxCeleb2 & - & - & - & 0.5594 & 0.0480 (0.01) \\
+        \hline
+        \multicolumn{8}{l}{$^{\mathrm{a}}$If provided, we noted the $P_{\text{target}}$ value within parentheses.} \\
+        \multicolumn{8}{l}{$^{\mathrm{b}}$Results reported in~\cite{nagrani2020voxceleb}.}
+        \end{tabular}
+        \label{tab:dataset}
+    \end{center}
+\end{table*}
+
 \section{Conclusion}
 
+Less data, more difficult to capture discriminative embeddings.
 
+
+curriculum
+Pipeline diagram
+remarkable
+Times new roman font in image
 LAS encoder repurposed
+VAD
 
 first slide: speaker id, speaker ver: 1) imagine with utterance and several heads, who is the speaker? 2) two utterances: same speaker?
 
@@ -153,10 +268,6 @@ predominant
 devise
 
 paradigm was to construct an utterance specific representation  
-
-Neural network models pipeline composed of three steps:
-
-
 
 
 
