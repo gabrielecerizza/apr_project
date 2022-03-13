@@ -34,7 +34,7 @@ class SpeakerRecognitionModel(LightningModule):
         feature_type: str = "logmel",
         embeddings_strategy: str = "separate",
         cohort_strategy: str = "separate",
-        normalization_strategy: str = "s_norm",
+        normalization_strategy: str = "as_norm",
         top_n: int = 100
     ) -> None:
         super(SpeakerRecognitionModel, self).__init__()
@@ -63,12 +63,21 @@ class SpeakerRecognitionModel(LightningModule):
             num_classes=self.num_classes,
             average=self.average
         )
+        self.test_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average
+        )
         self.train_top1_acc = Accuracy(
             num_classes=self.num_classes,
             average=self.average,
             top_k=1
         )
         self.val_top1_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=1
+        )
+        self.test_top1_acc = Accuracy(
             num_classes=self.num_classes,
             average=self.average,
             top_k=1
@@ -83,6 +92,11 @@ class SpeakerRecognitionModel(LightningModule):
             average=self.average,
             top_k=5
         )
+        self.test_top5_acc = Accuracy(
+            num_classes=self.num_classes,
+            average=self.average,
+            top_k=5
+        )
 
         self.train_f1 = F1Score(
             num_classes=self.num_classes,
@@ -91,6 +105,10 @@ class SpeakerRecognitionModel(LightningModule):
         self.val_f1 = F1Score(
             num_classes=self.num_classes,
             average=self.average
+        )
+        self.test_f1 = F1Score(
+            num_classes=self.num_classes,
+            average=self.average, 
         )
         self.train_top1_f1 = F1Score(
             num_classes=self.num_classes,
@@ -268,7 +286,7 @@ class SpeakerRecognitionModel(LightningModule):
         self, 
         batch, 
         cohort_strategy="separate",
-        normalization_strategy="s_norm"
+        normalization_strategy="as_norm"
     ):
         """Compute scores and labels for the test/validation
         batch provided as argument. The scores are normalized
@@ -347,7 +365,7 @@ class SpeakerRecognitionModel(LightningModule):
                             embedding, test_embedding, dim=0
                         )
 
-                    elif normalization_strategy == "s_norm":
+                    elif normalization_strategy == "as_norm":
                         distance = torch_cosine_distances(
                             embedding.unsqueeze(0), test_embedding.unsqueeze(0)
                         )[0]
@@ -395,22 +413,24 @@ class SpeakerRecognitionModel(LightningModule):
     def compute_verification_scores(
         self,
         cohort_strategy="separate",
-        normalization_strategy="s_norm"
+        normalization_strategy="as_norm"
     ):
         scores = []
         labels = []
 
         df = pd.read_csv(
-            self.base_path + f"subset/subset_verification_{self.num_secs}.csv"
+            self.base_path + f"subset/subset_verification.csv"
         )
         speaker_embeddings_dict = dict()
 
         for index, row in df.iterrows():
             speaker = row["Speaker"]
             file = row["File"]
-            filename = os.path.splitext(os.path.basename(file))[0]
-            full_path = f"{self.base_path}subset/{filename}"
+            # filename = os.path.splitext(os.path.basename(file))[0]
+            full_path = f"{self.base_path}subset/{file}"
             features = torch.load(full_path).unsqueeze(1)
+            if self.trainer.gpus >= 1:
+                features = features.to("cuda")
             embedding = self(features)[0]
             speaker_embeddings_dict.setdefault(speaker, []).append(embedding)
 
@@ -448,7 +468,7 @@ class SpeakerRecognitionModel(LightningModule):
                                     embedding, test_embedding, dim=0
                                 )
 
-                            elif normalization_strategy == "s_norm":
+                            elif normalization_strategy == "as_norm":
                                 distance = torch_cosine_distances(
                                     embedding.unsqueeze(0), 
                                     test_embedding.unsqueeze(0)
@@ -531,7 +551,6 @@ class SpeakerRecognitionModel(LightningModule):
         x, true_labels = batch["features"], batch["labels"]
         out = self(x)
         loss, logits = self.loss_func(out, true_labels)
-        batch["embeddings"] = out
 
         self.val_acc(logits, true_labels)
         self.val_f1(logits, true_labels)
@@ -541,6 +560,7 @@ class SpeakerRecognitionModel(LightningModule):
         self.val_top5_f1(logits, true_labels)
 
         """
+        batch["embeddings"] = out
         scores, labels = self.compute_scores(
             batch,
             cohort_strategy=self.cohort_strategy,
@@ -601,38 +621,21 @@ class SpeakerRecognitionModel(LightningModule):
 
         return super().validation_epoch_end(outputs)
 
-    def on_test_epoch_start(self) -> None:
-        self.create_embeddings()
-
-        return super().on_test_epoch_start()
-
     def test_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
         out = self(x)
         loss, logits = self.loss_func(out, true_labels)
-        batch["embeddings"] = out
 
-        test_acc = self.acc(logits, true_labels)
-        test_f1 = self.f1(logits, true_labels)
-
-        scores, labels = self.compute_scores(
-            batch,
-            cohort_strategy=self.cohort_strategy,
-            normalization_strategy=self.normalization_strategy
-        )
-        fnrs, fprs, thresholds = compute_error_rates(scores, labels)
-        test_min_dcf, _ = compute_min_dcf(
-            fnrs=fnrs, 
-            fprs=fprs, 
-            thresholds=thresholds
-        )
-        test_eer = compute_eer(scores.numpy(), labels.numpy())
+        self.test_acc(logits, true_labels)
+        self.test_f1(logits, true_labels)
+        self.test_top1_acc(logits, true_labels)
+        self.test_top5_acc(logits, true_labels)
 
         metrics_ls = [
-            ("test_acc", test_acc),
-            ("test_f1", test_f1), 
-            ("test_min_dcf", test_min_dcf),
-            ("test_eer", test_eer)
+            ("test_acc", self.test_acc),
+            ("test_f1", self.test_f1), 
+            ("test_top1_acc", self.test_top1_acc), 
+            ("test_top5_acc", self.test_top5_acc)
         ]
         for metric_name, metric_val in metrics_ls:
             self.log(
@@ -643,38 +646,40 @@ class SpeakerRecognitionModel(LightningModule):
                 on_epoch=True
             )
 
-        return scores, labels
+        return loss
 
     def test_epoch_end(self, outputs) -> None:
         model_name = self.__class__.__name__.lower()
         save_dir = "results/"
         os.makedirs(save_dir, exist_ok=True)
 
-        scores, labels = [], []
-
-        for tup in outputs:
-            scores.extend(tup[0])
-            labels.extend(tup[1])
-
-        scores = torch.tensor(scores)
-        labels = torch.tensor(labels)
-
-        fnrs, fprs, thresholds = compute_error_rates(
-            scores, labels
+        """
+        scores, labels = self.compute_verification_scores(
+            cohort_strategy=self.cohort_strategy,
+            normalization_strategy=self.normalization_strategy
         )
-        min_dcf, _ = compute_min_dcf(
+        fnrs, fprs, thresholds = compute_error_rates(scores, labels)
+        test_min_dcf, _ = compute_min_dcf(
             fnrs=fnrs, 
             fprs=fprs, 
             thresholds=thresholds
         )
-        eer = compute_eer(scores.numpy(), labels.numpy())
+        test_eer = compute_eer(scores.numpy(), labels.numpy())
+        """
+
+        mean_acc = self.test_acc.compute()
+        mean_f1 = self.test_f1.compute()
+        mean_top1_acc = self.test_top1_acc.compute()
+        mean_top5_acc = self.test_top5_acc.compute()
 
         res = {
             "model_name": model_name,
-            "acc": float(self.acc.compute().cpu().numpy()),
-            "f1": float(self.f1.compute().cpu().numpy()),
-            "min_dcf": float(min_dcf),
-            "eer": float(eer),
+            "acc": float(mean_acc.cpu().numpy()),
+            "f1": float(mean_f1.cpu().numpy()),
+            "top1_acc": float(mean_top1_acc.cpu().numpy()),
+            "top5_acc": float(mean_top5_acc.cpu().numpy()),
+            # "min_dcf": float(test_min_dcf),
+            # "eer": float(test_eer),
             "embeddings_dim": self.embeddings_dim,
             "loss": str(self.loss_func),
             "optimizer": str(self.optimizer),
@@ -1549,14 +1554,14 @@ class ResNet34SEV2(SpeakerRecognitionModel):
         self.conv1 = nn.Conv2d(
             1, 
             self.current_channels, 
-            kernel_size=7,
-            stride=2,
-            padding=3,
+            kernel_size=3,
+            stride=1,
+            padding=1,
             bias=False
         )
         self.bn1 = nn.BatchNorm2d(self.current_channels)
         self.relu = nn.ReLU()
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.conv2_x = self._make_sequence(32, num_blocks=3)
         self.conv3_x = self._make_sequence(64, num_blocks=4, stride=2)
         self.conv4_x = self._make_sequence(128, num_blocks=6, stride=2)
@@ -1570,10 +1575,8 @@ class ResNet34SEV2(SpeakerRecognitionModel):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(
-                    m.weight, 
-                    mode="fan_out", 
-                    nonlinearity="relu"
+                nn.init.xavier_normal_(
+                    m.weight
                 )
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
@@ -1587,13 +1590,14 @@ class ResNet34SEV2(SpeakerRecognitionModel):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        # x = self.maxpool(x)
 
         x = self.conv2_x(x)
         x = self.conv3_x(x)
         x = self.conv4_x(x)
         x = self.conv5_x(x)
         x = self.attn_pool(x)
+        x = torch.flatten(x, start_dim=1)
         x = self.embeddings(x)
 
         return x
@@ -2461,7 +2465,7 @@ efficientnetv2_config = {
 def build_efficientnetv2(
     embeddings_dim, num_classes, loss_func,
     optimizer=None, lr=None, lr_scheduler=None,
-    lr_scheduler_interval=None
+    lr_scheduler_interval=None, num_secs=4
 ) -> EfficientNetV2:
     return EfficientNetV2(
         config=efficientnetv2_config,
@@ -2469,6 +2473,7 @@ def build_efficientnetv2(
         num_classes=num_classes,
         loss_func=loss_func,
         optimizer=optimizer,
+        num_secs=num_secs,
         lr=lr,
         lr_scheduler=lr_scheduler,
         lr_scheduler_interval=lr_scheduler_interval

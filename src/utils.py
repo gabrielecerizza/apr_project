@@ -196,7 +196,9 @@ def create_features_from_row(
     win_length: int = None,
     hop_length: int = 160,
     data_aug: bool = True,
-    features_dir: str = "features"
+    full_test: bool=True,
+    features_dir: str = "features",
+    wave_test: bool = True
 ):
     audio_path = row["File"]
     wav_path = base_path + "vox1_dev/" + audio_path
@@ -237,7 +239,8 @@ def create_features_from_row(
             filename_aug = "bbl"
 
         if clip_secs is not None:
-            waveform = random_clip(waveform)
+            if not (row["Set"] == "test" and full_test):
+                waveform = random_clip(waveform)
         seconds = librosa.get_duration(
             y=waveform[0], sr=sample_rate
         )
@@ -246,9 +249,11 @@ def create_features_from_row(
             + row["Set"] + "/" + row["File"]
         save_dir = os.path.dirname(save_path)
 
-        if data_aug:
+        if data_aug or (features_dir == "verification") or wave_test:
+            melspec = waveform
+        else:
             melspec = extract_logmel(
-                waveform=waveform, 
+                waveform=waveform,  
                 sample_rate=sample_rate, 
                 n_mels=n_mels,
                 power=power,
@@ -258,8 +263,6 @@ def create_features_from_row(
                 win_length=win_length,
                 hop_length=hop_length
             )
-        else:
-            melspec = waveform
 
         melspec_filename = save_dir + "/" + filename \
             + "_" + filename_aug + ".pt"
@@ -302,7 +305,9 @@ def create_dataset(
     n_fft: int = 400,
     win_length: int = None,
     hop_length: int = 160,
-    data_aug: bool = True
+    data_aug: bool = True,
+    full_test: bool = True,
+    wave_test: bool = True
 ):
     if clip_secs is not None:
         random_clip = RandomClip(clip_secs=clip_secs)
@@ -406,7 +411,9 @@ def create_dataset(
             n_fft=n_fft,
             win_length=win_length,
             hop_length=hop_length,
-            data_aug=data_aug
+            data_aug=data_aug,
+            full_test=full_test,
+            wave_test=wave_test
         )
         ls.extend(feat_ls)
 
@@ -823,5 +830,119 @@ def train_sklearn_model(
         return model.predict(X_val), y_val
     else:
         return model.predict(X_test), y_test
+
+
+def create_verification_dataset(
+    speaker_ids,
+    num_speakers: int = 10,
+    base_path: str = "E:/Datasets/VoxCeleb1/",
+    n_mels: int = 80,
+    power: float = 1.0, # 1 for energy, 2 for power
+    to_db_flag: bool = True,
+    cmn_flag: bool = True,
+    n_fft: int = 400,
+    win_length: int = None,
+    hop_length: int = 160,
+    data_aug: bool = False,
+    full_test: bool=True
+):
+    ls = []
+    with open(base_path + "iden_split.txt") as file:
+        
+        gender_df = pd.read_csv(base_path + "vox1_meta.csv", sep="\t")
+        m_ratio = gender_df["Gender"].value_counts(normalize=True)["m"]
+        f_ratio = gender_df["Gender"].value_counts(normalize=True)["f"]
+        n_males = int(num_speakers * m_ratio)
+        n_females = num_speakers - n_males
+
+        restricted_df = gender_df[~gender_df["VoxCeleb1 ID"].isin(speaker_ids)]
+        
+        male_ids = random.sample(
+            list(
+                restricted_df[restricted_df["Gender"] == "m"]["VoxCeleb1 ID"].unique()
+            ),
+            n_males
+        )
+        female_ids = random.sample(
+            list(
+                restricted_df[restricted_df["Gender"] == "f"]["VoxCeleb1 ID"].unique()
+            ),
+            n_females
+        )
+        chosen_ids = male_ids + female_ids
+
+        print(chosen_ids)
+
+        for line in file:
+            set_num, audio_path = line.split()
+            speaker_id = audio_path.split("/")[0]
+            if speaker_id not in chosen_ids:
+                continue
+            gender = list(
+                gender_df[gender_df["VoxCeleb1 ID"] == speaker_id]["Gender"]
+            )[0]
+            ls.append((set_num, speaker_id, gender, audio_path))
+
+    df = pd.DataFrame(ls, columns =["Set", "Speaker", "Gender", "File"])
+    df["Set"] = df["Set"].apply(
+        lambda x: "train" if x == "1" else "val" if x == "2" else "test"
+    )
+
+    m_sampled_ratio = df.drop_duplicates("Speaker")["Gender"].value_counts(normalize=True)["m"]
+    f_sampled_ratio = df.drop_duplicates("Speaker")["Gender"].value_counts(normalize=True)["f"]
+
+    print(
+        f"Num speakers: {num_speakers}\n"
+        f"Male ratio in dataset: {m_ratio}\n"
+        f"Female ratio in dataset: {f_ratio}\n"
+        f"Male sampled ratio: {m_sampled_ratio}\n"
+        f"Female sampled ratio: {f_sampled_ratio}\n"
+        f"Num sampled males: {n_males}\n"
+        f"Num sampled females: {n_females}\n"
+    )
+
+    ls = []
+    for index, row in tqdm(
+        df.iterrows(),
+        total=len(df),
+        desc="Creating verification dataset",
+        leave=False
+    ):
+        # copy_audio(row, base_path)
+        feat_ls = create_features_from_row(
+            row=row, 
+            base_path=base_path,
+            rsc=None,
+            rbn=None,
+            reverb=None,
+            babble=None,
+            random_clip=None,
+            clip_secs=None,
+            n_mels=n_mels,
+            power=power,
+            to_db_flag=to_db_flag,
+            cmn_flag=cmn_flag,
+            n_fft=n_fft,
+            win_length=win_length,
+            hop_length=hop_length,
+            data_aug=data_aug,
+            features_dir="verification"
+        )
+        ls.extend(feat_ls)
+
+    df = pd.DataFrame(
+        ls, 
+        columns = [
+            "Set", "Speaker", "Type", "Augment", 
+            "Seconds", "Path", "File"
+        ]
+    )
+
+    csv_base_path = base_path + "subset/"
+
+    df.to_csv(
+        csv_base_path + f"subset_verification.csv", 
+        index_label=False
+    )
 
     

@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 
 from .utils import (
     pad_tensor, RandomBackgroundNoise, RandomSpeedChange,
-    extract_logmel
+    extract_logmel, RandomClip
 )
 
 
@@ -34,7 +34,8 @@ class VoxCelebDataset(Dataset):
         cmn_flag: bool = True,
         n_fft: int = 400,
         win_length: int = None,
-        hop_length: int = 160
+        hop_length: int = 160,
+        clip_test: bool = False
     ):
         super(VoxCelebDataset, self).__init__()
 
@@ -53,6 +54,7 @@ class VoxCelebDataset(Dataset):
         self.n_fft = n_fft
         self.win_length = win_length
         self.hop_length = hop_length
+        self.clip_test = clip_test
 
         if self.data_augment:
             self.rsc = RandomSpeedChange()
@@ -68,6 +70,7 @@ class VoxCelebDataset(Dataset):
                 min_snr_db=15, 
                 max_snr_db=20
             )
+        self.random_clip = RandomClip(clip_secs=self.num_secs)
 
         self.df = pd.read_csv(
             csv_base_path + f"subset_features_{num_secs}.csv"
@@ -140,6 +143,23 @@ class VoxCelebDataset(Dataset):
                 win_length=self.win_length,
                 hop_length=self.hop_length
             )
+        
+        if (self.set_name == "test"):
+            if self.clip_test:
+                features = self.random_clip(features)
+            features = extract_logmel(
+                waveform=features,
+                sample_rate=self.sample_rate,
+                n_mels=self.n_mels,
+                power=self.power,
+                to_db_flag=self.to_db_flag,
+                cmn_flag=self.cmn_flag,
+                n_fft=self.n_fft,
+                win_length=self.win_length,
+                hop_length=self.hop_length
+            )
+            
+
 
         if self.spec_augment and self.set_name == "train":
             features = self.freq_masking(features)
@@ -203,7 +223,8 @@ class VoxCelebDataModule(LightningDataModule):
         cmn_flag: bool = True,
         n_fft: int = 400,
         win_length: int = None,
-        hop_length: int = 160
+        hop_length: int = 160,
+        clip_test: bool = False
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -222,6 +243,7 @@ class VoxCelebDataModule(LightningDataModule):
         self.n_fft = n_fft
         self.win_length = win_length
         self.hop_length = hop_length
+        self.clip_test = clip_test
 
     def prepare_data(self):
         # Download
@@ -245,7 +267,8 @@ class VoxCelebDataModule(LightningDataModule):
                 cmn_flag=self.cmn_flag,
                 n_fft=self.n_fft,
                 win_length=self.win_length,
-                hop_length=self.hop_length
+                hop_length=self.hop_length,
+                clip_test=self.clip_test
             )
             self.vox_val = VoxCelebDataset(
                 csv_base_path=self.data_dir + "subset/",
@@ -261,7 +284,8 @@ class VoxCelebDataModule(LightningDataModule):
                 cmn_flag=self.cmn_flag,
                 n_fft=self.n_fft,
                 win_length=self.win_length,
-                hop_length=self.hop_length
+                hop_length=self.hop_length,
+                clip_test=self.clip_test
             )
 
         # Assign test dataset for use in dataloader(s)
@@ -280,7 +304,8 @@ class VoxCelebDataModule(LightningDataModule):
                 cmn_flag=self.cmn_flag,
                 n_fft=self.n_fft,
                 win_length=self.win_length,
-                hop_length=self.hop_length
+                hop_length=self.hop_length,
+                clip_test=self.clip_test
             )
 
     def train_dataloader(self):
