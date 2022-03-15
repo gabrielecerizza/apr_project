@@ -36,11 +36,9 @@ class RandomClip:
             audio_data = audio_data.unsqueeze(0)
         elif audio_length < self.clip_length:
             audio_data = audio_data.unsqueeze(0)
-            # print(audio_data.shape)
             audio_data = pad_tensor(
                 audio_data, audio_length, self.clip_length
             )[0]
-            # print(audio_data.shape)
 
         return audio_data
 
@@ -249,7 +247,8 @@ def create_features_from_row(
             + row["Set"] + "/" + row["File"]
         save_dir = os.path.dirname(save_path)
 
-        if data_aug or (features_dir == "verification") or wave_test:
+        if features_dir == "verification" or \
+            (row["Set"] == "test" and wave_test):
             melspec = waveform
         else:
             melspec = extract_logmel(
@@ -318,8 +317,7 @@ def create_dataset(
         noise_dir=noise_dir
     )
     reverb = Pedalboard(
-        [Reverb(room_size=0.75)], 
-        # sample_rate=16000
+        [Reverb(room_size=0.75)]
     )
     babble = RandomBackgroundNoise(
         noise_dir=babble_dir,
@@ -372,7 +370,6 @@ def create_dataset(
     )
     
     print(df["Set"].value_counts())
-    # df.to_csv(base_path + "subset/subset.csv", index_label=False)
 
     m_sampled_ratio = df.drop_duplicates("Speaker")["Gender"].value_counts(normalize=True)["m"]
     f_sampled_ratio = df.drop_duplicates("Speaker")["Gender"].value_counts(normalize=True)["f"]
@@ -476,21 +473,73 @@ def plot_waveform(
 def plot_spectrogram(
     spectrogram, 
     title=None, 
-    ylabel="freq_bin", 
+    ylabel="Frequency (Hz)", 
     aspect="auto", 
     xmax=None
 ):
     """Plot spectrogram function from torchaudio tutorial."""
+    sns.set_theme()
+    sns.set(style="ticks", font="Times New Roman")
+    sns.set_context("paper")
+    plt.rcParams["font.family"] = "Times New Roman"
+    plt.rc("axes", titlesize=12)
+    plt.rc("figure", titlesize=16)
 
     fig, axs = plt.subplots(1, 1)
-    axs.set_title(title or "Spectrogram")
+    axs.set_title(title or "Mel Spectrogram")
     axs.set_ylabel(ylabel)
-    axs.set_xlabel("frame")
-    im = axs.imshow(spectrogram, origin="lower", aspect=aspect)
+    axs.set_xlabel("Time (frames)")
+    im = axs.imshow(
+        spectrogram, 
+        origin="lower", 
+        aspect=aspect,
+        cmap=plt.get_cmap("viridis")
+    )
     if xmax:
         axs.set_xlim((0, xmax))
-    fig.colorbar(im, ax=axs)
+    fig.colorbar(im, ax=axs, format="%+2.0f dB")
     plt.show(block=False)
+
+
+def plot_specaug(
+    melspec1,
+    melspec2,
+    ylabel="Frequency",
+    aspect="auto"
+):
+    sns.set_theme()
+    sns.set(style="ticks", font="Times New Roman")
+    sns.set_context("paper")
+    plt.rcParams["font.family"] = "Times New Roman"
+    plt.rc("axes", titlesize=12)
+    plt.rc("figure", titlesize=16)
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, 
+        sharex=True,
+        figsize=(6,5)
+    )
+    fig.suptitle("Log Mel Spectrograms")
+    ax1.set_title("Time Masking")
+    ax1.set_ylabel(ylabel)
+    im = ax1.imshow(
+        melspec1, 
+        origin="lower", 
+        aspect=aspect,
+        cmap=plt.get_cmap("viridis")
+    )
+    ax2.set_title("Frequency Masking")
+    ax2.set_ylabel(ylabel)
+    ax2.set_xlabel("Time (frames)")
+    im = ax2.imshow(
+        melspec2, 
+        origin="lower", 
+        aspect=aspect,
+        cmap=plt.get_cmap("viridis")
+    )
+    fig.colorbar(im, ax=[ax1, ax2], format="%+2.0f dB")
+    plt.show(block=False)
+    fig.savefig("spec_aug.png", dpi=300)
 
 
 def pad_tensor(x, x_len, max_len):
@@ -531,7 +580,9 @@ def split_in_secs(waveform, sample_rate=16000, num_secs=3):
     # Pad last waveform if its length is less than
     # the desired number of seconds
     if wav_ls[-1].shape[1] < num_samples:
-        wav_ls[-1] = pad_tensor(wav_ls[-1], wav_ls[-1].shape[1], num_samples)
+        wav_ls[-1] = pad_tensor(
+            wav_ls[-1], wav_ls[-1].shape[1], num_samples
+        )
 
     return wav_ls
 
@@ -609,7 +660,7 @@ def kmeans_plot(
         random_clip=random_clip,
         label_dict=label_dict,
         limited_train=limited_train,
-        wave_data=True
+        wave_data=False
     )
     print("Training shape:", X_train.shape)
     X_test, y_test = get_data(
@@ -924,7 +975,7 @@ def train_sklearn_model(
         random_clip=random_clip,
         label_dict=label_dict,
         limited_train=limited_train,
-        wave_data=True
+        wave_data=False
     )
     print("Loaded train", X_train.shape)
     if validate:
@@ -934,7 +985,7 @@ def train_sklearn_model(
             num_secs=num_secs,
             random_clip=random_clip,
             label_dict=label_dict,
-            wave_data=True
+            wave_data=False
         )
         print("Loaded val", X_val.shape)
     X_test, y_test = get_data(
@@ -1067,5 +1118,3 @@ def create_verification_dataset(
         csv_base_path + f"subset_verification.csv", 
         index_label=False
     )
-
-    

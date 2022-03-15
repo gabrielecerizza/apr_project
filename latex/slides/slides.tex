@@ -224,7 +224,7 @@
 		\begin{column}{0.6\textwidth} 
 		\begin{center}
 		     	\includegraphics[width=1.0\textwidth]{img/softmax.png}
-		    	\end{center}
+		\end{center}
 		\end{column}
 	\end{columns}
     
@@ -238,7 +238,7 @@
 		 \begin{itemize}
 	        \item \textbf{VoxCeleb1 Dataset}
 	        \begin{itemize}
-	            \item Collected “in the wild" from Youtube
+	            \item Collected “in the wild" from YouTube
 	            \item Background noise, music, overlapping speech and varying room acoustics
 	            \item Heterogeneous age, gender and nationality 
 	        \end{itemize} 
@@ -252,34 +252,34 @@
 		\end{column}
 		\begin{column}{0.5\textwidth} 
 		\begin{center}
-		     	\begin{table}[htbp]
-			    \begin{center}
-				 \resizebox{0.9\textwidth}{!}{
-			        \begin{tabular}{|c|c|c|c|c|}
-			        \cline{3-5}
-			        \multicolumn{2}{c|}{\textbf{}} & \textbf{Full Dataset} & \textbf{Identif. Set} & \textbf{Verif. Set}\\
-			        \hline
-			        \multicolumn{2}{|c|}{\textbf{Speakers No.}} & 1,251 & 100 & 10\\
-			        \hline
-			        \multicolumn{2}{|c|}{\textbf{Samples No.}} & 152,123 & 12,123 & 1,896 \\
-			        \hline
-			        \multirow{2}{*}{\textbf{Gender}} & \textit{Male} & 0.55 & 0.51 & 0.50 \\
-			        & \textit{Female} & 0.55 & 0.52 & 0.50 \\
-			        \hline
-			        \multirow{4}{*}{\textbf{Nationality}$^{\mathrm{a}}$} & \textit{USA} & 0.65 & 0.52 & 0.41 \\
-			        & \textit{UK} & 0.21 & 0.12 & 0.32 \\
-			        & \textit{Italy} & 0.01 & 0.05 & 0.07 \\
-			        & \textit{Russia} & 0.07 & 0.02 & 0.02 \\
-			        \hline
-			        \multirow{2}{*}{\textbf{Seconds}} & \textit{Mean} & 8.12 & 7.59 & 5.67 \\
-			        & \textit{Std} & 2.55 & 3.55 & 4.55 \\
-			        \hline
-			        \multicolumn{4}{l}{$^{\mathrm{a}}$Only the four most frequent nationalities are listed.}
-			        \end{tabular}
-				}
-			        \label{tab:dataset}
-			    \end{center}
-			\end{table}
+			     \begin{table}[htbp]
+				    \begin{center}
+				    \resizebox{1\textwidth}{!}{
+				        \begin{tabular}{|c|c|c|c|c|}
+				        \cline{3-5}
+				        \multicolumn{2}{c|}{\textbf{}} & \textbf{Full Dataset} & \textbf{Identif. Set} & \textbf{Verif. Set}\\
+				        \hline
+				        \multicolumn{2}{|c|}{\textbf{Speakers No.}} & 1,251 & 100 & 10\\
+				        \hline
+				        \multicolumn{2}{|c|}{\textbf{Samples No.}} & 153,516 & 13,042 & 758 \\
+				        \hline
+				        \multirow{2}{*}{\textbf{Gender}} & \textit{Male} & 0.55 & 0.55 & 0.50 \\
+				        & \textit{Female} & 0.45 & 0.45 & 0.50 \\
+				        \hline
+				        \multirow{4}{*}{\textbf{Nationality}$^{\mathrm{a}}$} & \textit{USA} & 0.64 & 0.59 & 0.80 \\
+				        & \textit{UK} & 0.17 & 0.19 & 0.10 \\
+				        & \textit{Canada} & 0.04 & 0.02 & - \\
+				        & \textit{Australia} & 0.03 & 0.04 & - \\
+				        \hline
+				        \multirow{2}{*}{\textbf{Seconds}} & \textit{Mean} & 8.25 & 8.20 & 8.05 \\
+				        & \textit{Std} & 5.31 & 5.35 & 5.14 \\
+				        \hline
+				        \multicolumn{5}{l}{$^{\mathrm{a}}$Only the four most frequent nationalities in the entire dataset are listed.}
+				        \end{tabular}
+				   }
+				        \label{tab:dataset}
+				    \end{center}
+				\end{table}
 		\end{center}
 		\end{column}
 	\end{columns}
@@ -287,25 +287,36 @@
 \end{frame}
 
 \begin{frame}{\textsc{features and data augmentation}}
-    \begin{itemize}
-        \item \textbf{Features}
-        \begin{itemize}
-            \item 80-dimensional log Mel spectrograms
-            \item Window length of 25 ms, frame-shift of 10 ms
-            \item Cepstral mean normalization  
-        \end{itemize} 
-        \item \textbf{Offline data augmentation}
-        \begin{itemize}
-            \item Speed perturbation
-		\item Background noise
-		\item Babble
-		\item Reverberation 
-        \end{itemize}
-        \item \textbf{Online data augmentation}
-        \begin{itemize}
-            \item SpecAugment: time and frequency masking
-        \end{itemize} 
-    \end{itemize}
+ \begin{columns}
+	\begin{column}{0.45\textwidth}
+		\begin{itemize}
+		        \item \textbf{Features}
+		        \begin{itemize}
+		            \item 80-dimensional log Mel spectrograms
+		            \item Window length of 25 ms, frame-shift of 10 ms
+		            \item Cepstral mean normalization  
+		        \end{itemize} 
+		        \item \textbf{Offline data augmentation}
+		        \begin{itemize}
+		            \item Speed perturbation
+				\item Background noise
+				\item Babble
+				\item Reverberation 
+		        \end{itemize}
+		        \item \textbf{Online data augmentation}
+		        \begin{itemize}
+		            \item SpecAugment: time and frequency masking
+		        \end{itemize} 
+    		\end{itemize}
+	\end{column}
+	\begin{column}{0.55\textwidth}
+	\begin{center}
+     		\includegraphics[width=1.0\textwidth]{img/spec_aug.png}
+    	\end{center}
+	\end{column}
+ \end{columns}
+	
+    
 \end{frame}
 
 \begin{frame}{\textsc{models}}
@@ -334,11 +345,11 @@
 \begin{frame}{\textsc{large margin fine-tuning}}
 \center
     \begin{itemize}
-        \item \textbf{Large margin fine-tuning} 
+        \item \textbf{Large Margin Fine-Tuning} 
         \begin{itemize}
 	     \item Training in two steps
             \item Random crops: from 2 to 4 seconds
-		\item SC AAM Softmax: margin from 0.1 to 0.3, scale from 15 to 30
+		\item SC AAM Softmax: margin from 0.1 to 0.15, scale from 15 to 20
 		\item SpecAugment only in the first step
         \end{itemize} 
         \item \textbf{Evaluation}
@@ -350,39 +361,39 @@
 \end{frame}
 
 \begin{frame}{\textsc{results}}
-    \begin{table}[htbp]
     \begin{center}
-	 \resizebox{0.7\textwidth}{!}{
+        \begin{table}[htbp]
+	  \resizebox{0.85\textwidth}{!}{
         \begin{tabular}{|c|c|c|c|c|c|c|c|}
         \hline
-        \textbf{Model} & \textbf{Year} & \textbf{Training Set} &  \textbf{Top1 Acc.} & \textbf{Top5 Acc.} & \textbf{F1 Score} & \textbf{EER(\%)} & \textbf{MinDCF}$^{\mathrm{a}}$\\
+        \textbf{Model} & \textbf{Year} & \textbf{Training Set} &  \textbf{Top1 Accuracy} & \textbf{Top5 Accuracy} & \textbf{F1 Score} & \textbf{EER(\%)} & \textbf{MinDCF}$^{\mathrm{a}}$\\
         \hline
-        Nagrani et al. & 2017 & VoxCeleb1 & 80.5 & 92.1 & - & - & - \\
-        Nagrani et al. & 2017 & VoxCeleb1 & - & - & - & 7.8 & 0.71 (0.01) \\
-        Cai et al. & 2018 & VoxCeleb1 & 89.9 & 95.7 & - & - & - \\
+        Nagrani et al. & 2017 & VoxCeleb1 & 80.50 & 92.10 & - & - & - \\
+        Nagrani et al. & 2017 & VoxCeleb1 & - & - & - & 7.80 & 0.710 (0.01) \\
+        Cai et al. & 2018 & VoxCeleb1 & 89.90 & 95.70 & - & - & - \\
         Cai et al. & 2018 & VoxCeleb1 & - & - & - & 5.27 & 0.439 \\
         Cai et al. & 2018 & VoxCeleb1 & - & - & - & 4.46 & 0.577 \\
-        Chung et al. & 2018 & VoxCeleb1 & - & - & - & 7.8 & 0.71 (0.01) \\
         Okabe et al. & 2018 & VoxCeleb1 & - & - & - & 3.85 & 0.406 (0.01) \\
-        Hajibabaei, Dai & 2018 & VoxCeleb1 & 94.6 & 98.1 & - & 4.69 & 0.453 (0.01) \\
-        Hajibabaei, Dai & 2018 & VoxCeleb1 & 92.8 & 97.5 & - & 4.30 & 0.413 (0.01) \\
-        India et al. & 2019 & VoxCeleb1 & - & - & - & 4.0 & 0.0045 (0.01) \\
+        Hajibabaei, Dai & 2018 & VoxCeleb1 & \textbf{94.60} & \textbf{98.10} & - & 4.69 & 0.453 (0.01) \\
+        Hajibabaei, Dai & 2018 & VoxCeleb1 & 92.80 & 97.50 & - & 4.30 & 0.413 (0.01) \\
         Chung et al. & 2019 & VoxCeleb1 & 89.00 & 96.15 & - & 5.37 & - \\
         Chung et al. & 2019 & VoxCeleb1 & 89.00 & 95.94 & - & 5.26 & - \\
         Hajavi, Etemad & 2021 & VoxCeleb1 & - & - & - & 3.14 & - \\
-        Kwon et al. & 2021 & VoxCeleb2 & - & - & - & 0.73 & 0.056 (0.05)\\
-        Kwon et al. & 2021 & VoxCeleb2 & - & - & - & 0.74 & 0.061 (0.05)\\
-        Thienpondt et al. & 2021 & VoxCeleb2 & - & - & - & 0.64 & 0.0700 (0.01) \\
-        Thienpondt et al. & 2021 & VoxCeleb2 & - & - & - & 0.56 & 0.0743 (0.01) \\
-        Zhao et al. & 2021 & VoxCeleb2 & - & - & - & 0.5249 & 0.0498 (0.01) \\
-        Zhao et al. & 2021 & VoxCeleb2 & - & - & - & 0.5594 & 0.0480 (0.01) \\
+        Thienpondt et al. & 2021 & VoxCeleb2 & - & - & - & 0.64 & 0.070 (0.01) \\
+        Thienpondt et al. & 2021 & VoxCeleb2 & - & - & - & 0.56 & 0.074 (0.01) \\
+        Zhao et al. & 2021 & VoxCeleb2 & - & - & - & \textbf{0.52} & 0.050 (0.01) \\
+        Zhao et al. & 2021 & VoxCeleb2 & - & - & - & 0.56 & \textbf{0.048 (0.01)} \\
         \hline
-        \multicolumn{8}{l}{$^{\mathrm{a}}$If provided, we noted the $P_{\text{target}}$ value within parentheses.} \\
+        \textbf{SVM (our baseline)} & 2022 & VoxCeleb1 Subset & 13.98 & - & 11.46 & - & - \\
+        \textbf{ResNet34-SE (ours)} & 2022 & VoxCeleb1 Subset & 64.21 & 84.21 & 59.28 & 14.50 & 0.893 (0.01) \\
+        \textbf{LAS-MHA (ours)} & 2022 & VoxCeleb1 Subset & 47.97 & 66.62 & 42.94 & 21.69 & 0.980 (0.01) \\
+        \textbf{EfficientNetV2 (ours)} & 2022 & VoxCeleb1 Subset & 67.67 & 85.11 & \textbf{64.26} & 16.44 & 0.974 (0.01) \\
+        \hline
+        \multicolumn{8}{l}{$^{\mathrm{a}}$If provided by the Authors, we noted the $P_{\text{target}}$ value within parentheses.} \\
         \end{tabular}
-        }
+	}
+	\end{table}
     \end{center}
-\end{table}
-    
 \end{frame}
 
 

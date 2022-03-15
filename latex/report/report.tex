@@ -45,7 +45,7 @@ In our research we compared the performance of different neural network models, 
 
 % To train and evaluate the models, we used data from VoxCeleb1~\cite{nagrani2020voxceleb}. These data were collected ``in the wild'', that is under real-world conditions where speech segments may be affected by the environment, like background noise and cross-talk.
 
-The remainder of the report is organized as follows. In Section~\ref{sec:related_works} we discuss related works in the field of speaker recognition. In Section~\ref{sec:dataset} we illustrate the characteristics of the dataset and the features. In Section~\ref{sec:models} we describe three neural networks, whose performances are compared and discussed in Section~\ref{sec:results}. Finally, Section~\ref{sec:conclusions} contains our concluding remarks.  
+The remainder of this report is organized as follows. In Section~\ref{sec:related_works} we discuss related works in the field of speaker recognition. In Section~\ref{sec:dataset} we illustrate the characteristics of the dataset and the features. In Section~\ref{sec:models} we describe three neural networks, whose performances are compared and discussed in Section~\ref{sec:results}. Finally, Section~\ref{sec:conclusions} contains our concluding remarks\footnote{The code is available at: https://github.com/gabrielecerizza/apr\_project}.  
 
 
 \section{Related works}
@@ -55,11 +55,11 @@ The remainder of the report is organized as follows. In Section~\ref{sec:related
 
 %In particular, the interest in the field has grown in recent years, owing to the availability of large-scale datasets and to the increased computational power afforded by GPUs, which allows us to train deep neural networks.
 
-Speaker recognition methods have been widely studied in literature and, over the years, a particular approach became predominant. The idea is to produce fixed-sized feature representations of speech segments, which can then be processed by a classifier or directly compared. With the advent of neural networks, these speaker representations, known as ``embeddings'', were obtained as the output of a bottleneck layer trained for classification. Embeddings proved to be robust with respect to acoustic conditions and discriminative with respect to speakers, thus yielding accurate results. 
+Speaker recognition methods have been widely studied in literature and, over the years, a particular approach has become predominant. The idea is to produce fixed-sized feature representations of speech segments, which can then be processed by a classifier or directly compared. With the advent of neural networks, these speaker representations, known as ``embeddings'', were obtained as the output of a bottleneck layer trained for classification. Embeddings proved to be robust with respect to acoustic conditions and discriminative with respect to speakers, thus yielding accurate results. 
 
 % Examples of such neural embeddings include d-vectors~\cite{variani2014dvectors} and, more recently, x-vectors~\cite{snyder2017deep,snyder2018xvectors}.
 
-To perform speaker recognition with neural networks, an architecture composed of three blocks is traditionally employed~\cite{okabe2018asp}. The first block, also called ``trunk'', receives as input acoustic features such as MFCCs or Mel spectrograms and produces frame-level features. Typical layers of this block include CNNs, Time-Delay Neural Networks (TDNN)~\cite{peddinti2015timedelay}, mostly implemented as dilated convolution, and Recurrent Neural Networks such as Long Short-Term Memory (LSTM) networks. 
+To perform speaker recognition with neural networks, an architecture composed of three blocks is traditionally employed~\cite{okabe2018asp}. The first block, also called ``trunk'', receives as input acoustic features such as MFCCs or Mel spectrograms and produces frame-level features. Typical layers of this block include CNNs, Time-Delay Neural Networks (TDNNs)~\cite{peddinti2015timedelay}, mostly implemented as dilated convolution, and Recurrent Neural Networks such as Long Short-Term Memory (LSTM) networks. 
 
 % Popular architectures for the first block are borrowed from the image recognition domain, such as ResNet~\cite{he2016resnet}, VGG~\cite{simonyan2014vgg} and, recently, Visual Transformers like CoAtNet~\cite{dai2021coatnet}. 
 
@@ -73,7 +73,7 @@ Finally, the third block contains the loss function, possibly preceded by a full
 
 \subsection{Speaker Verification Peculiarities}
 
-\paragraph{Scoring}After training the models for classification, a further step is necessary to compare utterances. During evaluation, embeddings are extracted for each utterance and then compared pairwise. These comparisons may be carried out with backend systems like Probabilistic Linear Discriminant Analysis (PLDA), possibly trained on a different dataset ~\cite{snyder2017deep}. However, more recently, embeddings have been compared simply by cosine similarity, achieving gains in performance~\cite{cai2018exploring}.
+\paragraph{Scoring}After training the models for classification, a further step is necessary to perform verification. During evaluation, embeddings are extracted for each utterance and then compared pairwise. These comparisons may be carried out with backend systems like Probabilistic Linear Discriminant Analysis (PLDA), possibly trained on a different dataset ~\cite{snyder2017deep}. However, more recently, embeddings have been compared simply by cosine similarity, achieving gains in performance~\cite{cai2018exploring}.
 
 \paragraph{Score normalization}To produce well calibrated and reliable scores, normalization is often applied. A popular score normalization technique is ``Adaptive S-Norm'' (AS-Norm)~\cite{matejka2017asnorm}.
 
@@ -130,7 +130,7 @@ The \textit{caveat} is that Softmax penalizes only classification errors, withou
 
 % originally in the context of face recognition, and have now become widespread in the speaker recognition field, reportedly achieving an improved performance.
 
-This class of loss functions is chiefly represented by Angular Additive Margin Softmax (AAM Softmax or ArcFace)~\cite{deng2019arcface}. This function introduces an angular margin penalty $m$, which forces the cosine similarity between the sample and its true class to be $m$ more than the cosine similarity between the sample and wrong classes. This difference is also multiplied by a scale factor $s$, which prevents the gradient from getting too small~\cite{chung2020defence,hajibabaei2018unified}. On the downside, it is difficult to train with AAM Softmax and results are sensitive to the parameter values.
+This class of loss functions is chiefly represented by Angular Additive Margin Softmax (AAM Softmax or ArcFace)~\cite{deng2019arcface}. This function introduces an angular margin penalty $m$, which forces the cosine similarity between the sample and its true class to be $m$ more than the cosine similarity between the sample and wrong classes. This difference is also multiplied by a scale factor $s$, which prevents the gradient from getting too small~\cite{chung2020defence,hajibabaei2018unified}. On the downside, it is difficult to train with AAM Softmax and results are sensitive to the values of the parameters.
 
 Recently, Sub-center AAM Softmax (SC AAM Softmax) has been proposed~\cite{deng2020subarcface}. This loss function relaxes the intra-class compactness constraint by incorporating $K$ sub-centers for each class and forcing each sample to be close to any of the positive sub-centers. It is expected that one dominant sub-center will contain the majority of ``clean'' samples belonging to the class, while the hard and noisy samples will gravitate toward the non-dominant sub-centers. As such, SC AAM Softmax is more robust to noise.
 
@@ -173,13 +173,13 @@ The VoxCeleb1 dataset consists of over 150,000 utterances from 1,251 celebrities
 
 \subsection{Features}
 
-As input features, we extracted 80-dimensional log Mel spectrograms with a window length of 25 ms (Hamming window) and a frame-shift of 10 ms, to which we applied cepstral mean normalization at the instance level. MFCCs are ill suited for the VoxCeleb1 dataset, since they degrade with real-world noise and they lack speaker discriminating features like pitch information~\cite{nagrani2020voxceleb}. VAD is ineffective, since VoxCeleb1 consists mostly of continuous speech~\cite{chung2020defence}.
+As input features, we extracted 80-dimensional log Mel spectrograms with a window length of 25 ms (Hamming window) and a frame-shift of 10 ms, to which we applied cepstral mean normalization at the instance level. MFCCs are ill-suited for the VoxCeleb1 dataset, since they degrade with real-world noise and they lack speaker discriminating features like pitch information~\cite{nagrani2020voxceleb}. VAD is ineffective, since VoxCeleb1 consists mostly of continuous speech~\cite{chung2020defence}.
 
 In order to improve generalization, we also applied data augmentation. We performed four types of offline data augmentation. For each training sample we
 \begin{enumerate}
     \item perturbed the waveform by a speed factor of 0.9 or 1.1, randomly chosen;
-    \item added background noise, randomly chosen from the MUSAN dataset~\cite{snyder2015musan}, with a signal-to-noise ratio DB between 0 and 15;
-    \item added babble effect by superimposing a speech track randomly chosen from MUSAN over the waveform, with a signal-to-noise ratio DB between 15 and 20;
+    \item added background noise, randomly chosen from the MUSAN dataset~\cite{snyder2015musan}, with a signal-to-noise ratio dB between 0 and 15;
+    \item added babble effect by superimposing a speech track randomly chosen from MUSAN over the waveform, with a signal-to-noise ratio dB between 15 and 20;
     \item added reverberation by using the \texttt{pedalboard} library from Spotify\footnote{https://github.com/spotify/pedalboard}.
 \end{enumerate}
 As a consequence, we obtained a total of 59,140 training samples. Furthermore, we chained SpecAugment~\cite{park2019specaug} online data augmentation by randomly masking 0 to 5 frames in the time domain and 0 to 10 frequency bands. Validation and test samples were left untouched.
@@ -232,7 +232,7 @@ For speaker verification, we compared the embeddings by cosine similarity and th
 
 Considering the fact that we used a subset of VoxCeleb1 for both training and test set, a direct comparison with models described in literature is not possible. Besides, researchers often trained their models on the much larger VoxCeleb2 dataset before evaluating them on the VoxCeleb1 test set. For this reason, we added the kind of training set to the results shown in Table~\ref{tab:results}. As a baseline, we used a Support Vector Machine (SVM) with RBF kernel and parameter C equal to 1, trained on the same subset as K-Means (see Section~\ref{sec:dataset}).
 
-Our models performed better than the baseline, but could not match the current state-of-the-art systems. We argue that literature models (i) were trained on larger datasets, which provide more diversity and variation and thus better generalization, as the models trained on VoxCeleb2 suggest; (ii) were usually trained on 6 seconds long utterances, which was not possible for us; (iii) were aggregated in fusion or ensemble systems with up to 14 models~\cite{zhang2021beijing}.
+Our models performed better than the baseline, but could not match the current state-of-the-art systems. We argue that literature models (i) were trained on larger datasets, which provide more diversity and variation and thus better generalization, as the models trained on VoxCeleb2 suggest; (ii) were usually trained on 6 seconds long utterances, which was not possible for us; (iii) were often aggregated in fusion or ensemble systems.
 
 ResNet34-SE and EfficientNetV2 achieved similar performances on the identification task, but the former was clearly superior on the verification task. This can be ascribed to the more discriminative embeddings obtained with SC AAM Softmax. 
 
@@ -277,7 +277,7 @@ ResNet34-SE and EfficientNetV2 achieved similar performances on the identificati
         \hline
         \textbf{SVM (our baseline)} & 2022 & VoxCeleb1 Subset & 13.98 & - & 11.46 & - & - \\
         \textbf{ResNet34-SE (ours)} & 2022 & VoxCeleb1 Subset & 64.21 & 84.21 & 59.28 & 14.50 & 0.893 (0.01) \\
-        \textbf{LAS-MHA (ours)} & 2022 & VoxCeleb1 Subset & 49.32 & 65.26 & 45.40 & 24.47 & 0.984 (0.01) \\
+        \textbf{LAS-MHA (ours)} & 2022 & VoxCeleb1 Subset & 47.97 & 66.62 & 42.94 & 21.69 & 0.980 (0.01) \\
         \textbf{EfficientNetV2 (ours)} & 2022 & VoxCeleb1 Subset & 67.67 & 85.11 & \textbf{64.26} & 16.44 & 0.974 (0.01) \\
         \hline
         \multicolumn{8}{l}{$^{\mathrm{a}}$If provided by the Authors, we noted the $P_{\text{target}}$ value within parentheses.} \\
@@ -291,7 +291,7 @@ ResNet34-SE and EfficientNetV2 achieved similar performances on the identificati
 \section{Conclusions}
 \label{sec:conclusions}
 
-This work investigated the field of speaker recognition, illustrating the most popular techniques and comparing different neural network models. Our models, albeit far from the state-of-the-art, showed promising results, which could be improved in future research by way of larger datasets and more computational power.
+This work investigated the field of speaker recognition, illustrating the most popular techniques and comparing different neural network models. Our models, albeit far from the state-of-the-art, showed promising results, which could be improved in future research by way of larger datasets, more computational power and fusion strategies.
 
 \bibliographystyle{IEEEtran}
 \bibliography{bibtex_entries}
