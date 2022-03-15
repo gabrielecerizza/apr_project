@@ -129,10 +129,11 @@
 		        \item \textbf{Second block}
 			  \begin{itemize}
 		             \item Pooling layer to aggregate frame-level features of varying length into fixed dimensional utterance-level features
-		        \end{itemize}
+					 \item Fully connected layer to produce embeddings
+					\end{itemize}
 		        \item \textbf{Third block}
 		        \begin{itemize}
-				\item Fully connected layer to produce embeddings
+			\item Projection into a dimension whose size is the number of speakers 
 		             \item Loss function
 		        \end{itemize}
 		    \end{itemize}

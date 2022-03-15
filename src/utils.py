@@ -536,52 +536,91 @@ def split_in_secs(waveform, sample_rate=16000, num_secs=3):
     return wav_ls
 
 
-def kmeans_plot(
-    csv_base_path: str = "E:/Datasets/VoxCeleb1/subset/",
-    num_secs: int = 4,
-    num_speakers: int = 8
+def get_data(
+    set_name, 
+    base_path, 
+    num_secs, 
+    random_clip,
+    label_dict,
+    wave_data,
+    limited_train=None
 ):
+    df = pd.read_csv(
+        base_path + f"subset/subset_features_{num_secs}.csv"
+    )
+    df = df.sample(frac=1).reset_index(drop=True)
+    df_set = df[df["Set"] == set_name]
+    speaker_dict = dict()
+
+    features_ls = []
+    y_ls = []
+    for idx, row in df_set.iterrows():
+        speaker = row["Speaker"]
+        speaker_dict.setdefault(speaker, 0)
+        
+        if row["Augment"] != "none":
+            continue
+
+        if set_name == "train" and limited_train is not None \
+            and speaker_dict[speaker] >= limited_train:
+            continue
+        speaker_dict[speaker] += 1
+
+        features = torch.load(base_path + f"subset/{row['File']}")
+        if wave_data:
+            features = random_clip(features)
+            features = extract_logmel(features)
+        features_ls.append(
+            features.numpy()
+        )
+        y_ls.append(
+            label_dict[row["Speaker"]]
+        )
+    X = np.vstack(features_ls)
+    X = X.reshape(X.shape[0], -1)
+    y = np.vstack(y_ls).squeeze(-1)
+
+    return X, y
+
+
+def kmeans_plot(
+    base_path: str = "E:/Datasets/VoxCeleb1/",
+    num_secs: int = 4,
+    num_speakers: int = 100,
+    limited_train: int = 10
+):
+    random_clip = RandomClip(clip_secs=num_secs)
+    label_dict = pd.read_csv(
+        base_path + f"subset/subset_labels_{num_secs}.csv"
+    ).to_dict()["label"]
+
     sns.set_theme()
     sns.set(style="ticks", font="Times New Roman")
     sns.set_context("paper")
     plt.rcParams["font.family"] = "Times New Roman"
+    plt.rc("axes", titlesize=12)
+    plt.rc("figure", titlesize=16)
+    # plt.rcParams["font.size"] = 16
 
-    df = pd.read_csv(
-        csv_base_path + f"subset_features_{num_secs}.csv"
+    X_train, y_train = get_data(
+        set_name="train",
+        base_path=base_path,
+        num_secs=num_secs,
+        random_clip=random_clip,
+        label_dict=label_dict,
+        limited_train=limited_train,
+        wave_data=True
     )
-    label_dict = pd.read_csv(
-        csv_base_path + f"subset_labels_{num_secs}.csv"
-    ).to_dict()["label"]
-    df_train = df[df["Set"] == "train"]
-    df_test = df[df["Set"] == "test"]
-    
-    melspecs_train = []
-    y_train = []
-    for idx, row in df_train.iterrows():
-        melspec = torch.load(csv_base_path + row["File"]).numpy()
-        melspecs_train.append(
-            melspec
-        )
-        y_train.append(
-            label_dict[row["Speaker"]]
-        )
-    X_train = np.vstack(melspecs_train)
-    X_train = X_train.reshape(X_train.shape[0], -1)
-    y_train = np.vstack(y_train).squeeze(-1)
-
-    melspecs_test = []
-    y_test = []
-    for idx, row in df_test.iterrows():
-        melspec = torch.load(csv_base_path + row["File"]).numpy()
-        melspecs_test.append(
-            melspec
-        )
-        y_test.append(
-            label_dict[row["Speaker"]]
-        )
-    X_test = np.vstack(melspecs_test)
-    X_test = X_test.reshape(X_test.shape[0], -1)
-    y_test = np.vstack(y_test).squeeze(-1)
+    print("Training shape:", X_train.shape)
+    X_test, y_test = get_data(
+        set_name="test",
+        base_path=base_path,
+        num_secs=num_secs,
+        random_clip=random_clip,
+        label_dict=label_dict,
+        wave_data=True
+    )
+    print("Test shape:", X_test.shape)
 
     kmeans = KMeans(n_clusters=num_speakers)
     kmeans.fit(X_train)
@@ -680,20 +719,52 @@ def print_stats(subset, df, meta_df, csv_base_path):
 
 
 def get_dataset_stats(
-    csv_base_path: str = "E:/Datasets/VoxCeleb1/",
+    base_path: str = "E:/Datasets/VoxCeleb1/",
     num_secs: int = 4,
-    num_speakers: int = 8
+    num_speakers: int = 100
 ):
+    print("Starting")
     df = pd.read_csv(
-        csv_base_path + f"subset/subset_features_{num_secs}.csv"
+        base_path + f"subset/subset_features_{num_secs}.csv"
     )
-    meta_df = pd.read_csv(csv_base_path + "vox1_meta.csv", sep="\t")
+    df_no_aug = df[df["Augment"] == "none"]
+    meta_df = pd.read_csv(base_path + "vox1_meta.csv", sep="\t")
     label_dict = pd.read_csv(
-        csv_base_path + f"subset/subset_labels_{num_secs}.csv"
+        base_path + f"subset/subset_labels_{num_secs}.csv"
     ).to_dict()["label"]
+    print("Got the dataframes")
 
     speaker_ids = df["Speaker"].unique()
     assert len(speaker_ids) == num_speakers
+    
+    tot_seconds_ls = []
+
+    with open(base_path + "iden_split.txt") as file:
+        all_lines = file.readlines()
+        num_lines = len(all_lines)
+        print("To analyze entire dataset")
+        for line in tqdm(
+            all_lines,
+            total=num_lines,
+            desc="Analyzing entire dataset"
+        ):
+            set_num, audio_path = line.split()
+            full_path = base_path + "vox1_dev/" + audio_path
+            if not os.path.isfile(full_path):
+                full_path = base_path + "vox1_test/" + audio_path
+            waveform, sample_rate = torchaudio.load(
+                full_path
+            )
+            seconds = librosa.get_duration(
+                y=waveform[0],
+                sr=sample_rate
+            )
+            tot_seconds_ls.append(seconds)
+
+    print("Finished analysis of entire dataset")
+
+    tot_seconds_ls = np.array(tot_seconds_ls)
+    tot_speaker_ids = meta_df["VoxCeleb1 ID"].unique()
 
     gender_ls = []
     nat_ls = []
@@ -709,26 +780,64 @@ def get_dataset_stats(
             )[0]
         )
 
+    verif_df = pd.read_csv(
+        base_path + f"subset/subset_verification.csv"
+    )
+    verif_speaker_ids = verif_df["Speaker"].unique()
+    verif_seconds = verif_df["Seconds"]
+    verif_gender_ls = []
+    verif_nat_ls = []
+    for speaker_id in verif_speaker_ids:
+        verif_gender_ls.append(
+            list(
+                meta_df[meta_df["VoxCeleb1 ID"] == speaker_id]["Gender"]
+            )[0]
+        )
+        verif_nat_ls.append(
+            list(
+                meta_df[meta_df["VoxCeleb1 ID"] == speaker_id]["Nationality"]
+            )[0]
+        )
+
     print("*" * 20)
     print("GENERAL STATS")
     print("*" * 20)
+    print("Samples in entire dataset:", num_lines)
+    print("Samples in identification subset (without augment):", len(df_no_aug))
+    print("Samples in verification subset:", len(verif_df))
+    print("Speakers in entire dataset:", len(tot_speaker_ids))
+    print("Speakers in identification subset:", len(speaker_ids))
+    print("Speakers in verification subset:", len(verif_speaker_ids))
     print("Gender in entire dataset:")
     print(meta_df["Gender"].value_counts(normalize=True).round(2))
-    print("Gender in subset:")
+    print("Gender in identification subset:")
     print(pd.Series(gender_ls).value_counts(normalize=True).round(2))
+    print("Gender in verification subset:")
+    print(pd.Series(verif_gender_ls).value_counts(normalize=True).round(2))
     print("Nationality in entire dataset:")
     print(meta_df["Nationality"].value_counts(normalize=True).round(2))
-    print("Nationality in subset:")
+    print("Nationality in identification subset:")
     print(pd.Series(nat_ls).value_counts(normalize=True).round(2))
+    print("Nationality in verification subset:")
+    print(pd.Series(verif_nat_ls).value_counts(normalize=True).round(2))
+    print("Mean seconds in entire dataset:", round(np.mean(tot_seconds_ls), 2))
+    print("Std seconds in entire dataset:", round(np.std(tot_seconds_ls), 2))
+    print("Mean seconds in verification dataset:", verif_seconds.mean().round(2))
+    print("Std seconds in verification dataset:", verif_seconds.std().round(2))
 
     df_train = df[df["Set"] == "train"]
     df_train = df_train[df_train["Augment"] == "none"]
     df_test = df[df["Set"] == "test"]
     df_test = df_test[df_test["Augment"] == "none"]
 
-    print_stats("subset", df, meta_df, csv_base_path)
-    print_stats("train", df_train, meta_df, csv_base_path)
-    print_stats("test", df_test, meta_df, csv_base_path)
+    print(
+        "Subset now counting samples instead" 
+        "of speakers (this is the reason why some "
+        "numbers are different)"
+    )
+    print_stats("subset", df, meta_df, base_path)
+    print_stats("train", df_train, meta_df, base_path)
+    print_stats("test", df_test, meta_df, base_path)
 
 
 def create_mfcc(
@@ -800,32 +909,46 @@ def train_sklearn_model(
     model,
     num_secs = 4,
     base_path: str = "E:/Datasets/VoxCeleb1/",
-    validate: bool = False
+    validate: bool = False,
+    limited_train: int = 10
 ):
-    def get_data(set_name):
-        df = pd.read_csv(
-            base_path + f"subset/subset_mfcc_{num_secs}.csv"
-        )
-        df_set = df[df["Set"] == set_name]
-        mfcc_ls = []
-        y_ls = []
-        for idx, row in df_set.iterrows():
-            mfcc = torch.load(base_path + row["File"]).numpy()
-            mfcc_ls.append(
-                mfcc
-            )
-            y_ls.append(
-                row["Label"]
-            )
-        X_mfcc = np.vstack(mfcc_ls)
-        X_mfcc = X_mfcc.reshape(X_mfcc.shape[0], -1)
-        y = np.vstack(y_ls).squeeze(-1)
+    random_clip = RandomClip(clip_secs=num_secs)
+    label_dict = pd.read_csv(
+        base_path + f"subset/subset_labels_{num_secs}.csv"
+    ).to_dict()["label"]
 
-    X_train, y_train = get_data("train")
-    X_val, y_val = get_data("val")
-    X_test, y_test = get_data("test")
+    X_train, y_train = get_data(
+        set_name="train",
+        base_path=base_path,
+        num_secs=num_secs,
+        random_clip=random_clip,
+        label_dict=label_dict,
+        limited_train=limited_train,
+        wave_data=True
+    )
+    print("Loaded train", X_train.shape)
+    if validate:
+        X_val, y_val = get_data(
+            set_name="val",
+            base_path=base_path,
+            num_secs=num_secs,
+            random_clip=random_clip,
+            label_dict=label_dict,
+            wave_data=True
+        )
+        print("Loaded val", X_val.shape)
+    X_test, y_test = get_data(
+        set_name="test",
+        base_path=base_path,
+        num_secs=num_secs,
+        random_clip=random_clip,
+        label_dict=label_dict,
+        wave_data=True
+    )
+    print("Loaded test", X_test.shape)
 
     model.fit(X_train, y_train)
+    print("Finished training")
     if validate:
         return model.predict(X_val), y_val
     else:
@@ -834,6 +957,7 @@ def train_sklearn_model(
 
 def create_verification_dataset(
     speaker_ids,
+    chosen_ids = None,
     num_speakers: int = 10,
     base_path: str = "E:/Datasets/VoxCeleb1/",
     n_mels: int = 80,
@@ -855,23 +979,22 @@ def create_verification_dataset(
         n_males = int(num_speakers * m_ratio)
         n_females = num_speakers - n_males
 
-        restricted_df = gender_df[~gender_df["VoxCeleb1 ID"].isin(speaker_ids)]
-        
-        male_ids = random.sample(
-            list(
-                restricted_df[restricted_df["Gender"] == "m"]["VoxCeleb1 ID"].unique()
-            ),
-            n_males
-        )
-        female_ids = random.sample(
-            list(
-                restricted_df[restricted_df["Gender"] == "f"]["VoxCeleb1 ID"].unique()
-            ),
-            n_females
-        )
-        chosen_ids = male_ids + female_ids
-
-        print(chosen_ids)
+        if chosen_ids is None:
+            restricted_df = gender_df[~gender_df["VoxCeleb1 ID"].isin(speaker_ids)]
+            
+            male_ids = random.sample(
+                list(
+                    restricted_df[restricted_df["Gender"] == "m"]["VoxCeleb1 ID"].unique()
+                ),
+                n_males
+            )
+            female_ids = random.sample(
+                list(
+                    restricted_df[restricted_df["Gender"] == "f"]["VoxCeleb1 ID"].unique()
+                ),
+                n_females
+            )
+            chosen_ids = male_ids + female_ids
 
         for line in file:
             set_num, audio_path = line.split()

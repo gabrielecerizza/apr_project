@@ -2,12 +2,14 @@ import json
 import math
 import os
 from typing import Callable, Optional, Union
-from matplotlib.pyplot import xlim
 
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
 from pytorch_lightning import LightningModule
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from torch import nn, Tensor
 from torchmetrics import Accuracy, F1Score
 from tqdm.auto import tqdm
@@ -16,6 +18,7 @@ from .metrics import (
     compute_eer, compute_error_rates, compute_min_dcf,
     torch_cosine_distances
 )
+from .utils import extract_logmel, RandomClip
 
 
 class SpeakerRecognitionModel(LightningModule):
@@ -191,7 +194,6 @@ class SpeakerRecognitionModel(LightningModule):
         if self.lr_scheduler is not None:
             lr_sch = self.lr_scheduler.__class__.__name__
             
-
         self.hparam_dict = {
             "hp/num_classes": self.num_classes,
             "hp/embeddings_dim": self.embeddings_dim,
@@ -413,10 +415,12 @@ class SpeakerRecognitionModel(LightningModule):
     def compute_verification_scores(
         self,
         cohort_strategy="separate",
-        normalization_strategy="as_norm"
+        normalization_strategy="as_norm",
+        embedding_strategy="full"
     ):
         scores = []
         labels = []
+        random_clip = RandomClip(clip_secs=self.num_secs)
 
         df = pd.read_csv(
             self.base_path + f"subset/subset_verification.csv"
@@ -428,11 +432,41 @@ class SpeakerRecognitionModel(LightningModule):
             file = row["File"]
             # filename = os.path.splitext(os.path.basename(file))[0]
             full_path = f"{self.base_path}subset/{file}"
-            features = torch.load(full_path).unsqueeze(1)
-            if self.trainer.gpus >= 1:
-                features = features.to("cuda")
-            embedding = self(features)[0]
-            speaker_embeddings_dict.setdefault(speaker, []).append(embedding)
+
+            if embedding_strategy == "average":
+                features = torch.load(full_path)
+                features_ls = list(
+                    torch.split(features, 16000 * self.num_secs, dim=-1)
+                )
+                embeddings_ls = []
+                for idx in range(
+                    max(int(row["Seconds"] // self.num_secs), 1)
+                ):
+                    waveform = features_ls[idx]
+                    melspec = extract_logmel(waveform).unsqueeze(1)
+                    if self.trainer.gpus >= 1:
+                        melspec = melspec.to("cuda")
+                    embedding = self(melspec)[0]
+                    embeddings_ls.append(embedding)
+                
+                embedding = torch.vstack(embeddings_ls).mean(dim=0)
+                speaker_embeddings_dict.setdefault(speaker, []).append(embedding)
+            elif embedding_strategy == "full":
+                features = torch.load(full_path)
+                melspec = extract_logmel(features).unsqueeze(1)
+                if self.trainer.gpus >= 1:
+                        melspec = melspec.to("cuda")
+                embedding = self(melspec)[0]
+                speaker_embeddings_dict.setdefault(speaker, []).append(embedding)
+            elif embedding_strategy == "crop":
+                features = torch.load(full_path)
+                features = random_clip(features)
+                melspec = extract_logmel(features).unsqueeze(1)
+                if self.trainer.gpus >= 1:
+                        melspec = melspec.to("cuda")
+                embedding = self(melspec)[0]
+                speaker_embeddings_dict.setdefault(speaker, []).append(embedding)
+
 
         speakers = list(speaker_embeddings_dict.keys())
 
@@ -512,6 +546,27 @@ class SpeakerRecognitionModel(LightningModule):
         assert not labels.isnan().any()
 
         return scores, labels
+
+    def analyze_errors(self, preds, true_labels):
+        meta_df = pd.read_csv(self.base_path + "vox1_meta.csv", sep="\t")
+        label_dict = pd.read_csv(
+            self.base_path + f"subset/subset_labels_{self.num_secs}.csv"
+        ).to_dict()["label"]
+        id_dict = {id: label for label, id in label_dict.items()}
+
+        nat_ls = []
+        gender_ls = []
+
+        for pred, label in zip(preds, true_labels):
+            if pred != label:
+                speaker_id = id_dict[label]
+                speaker_df = meta_df[meta_df["VoxCeleb1 ID"] == speaker_id]
+                speaker_gender = list(speaker_df["Gender"])[0]
+                speaker_nationality = list(speaker_df["Nationality"])[0]
+                gender_ls.append(speaker_gender)
+                nat_ls.append(speaker_nationality)
+
+        return pd.Series(nat_ls), pd.Series(gender_ls)
 
     def training_step(self, batch, batch_idx):
         x, true_labels = batch["features"], batch["labels"]
@@ -646,14 +701,33 @@ class SpeakerRecognitionModel(LightningModule):
                 on_epoch=True
             )
 
-        return loss
+        return torch.argmax(logits, dim=1), true_labels
 
     def test_epoch_end(self, outputs) -> None:
         model_name = self.__class__.__name__.lower()
         save_dir = "results/"
         os.makedirs(save_dir, exist_ok=True)
 
-        """
+        preds, true_labels = [], []
+
+        for tup in outputs:
+            preds.append(tup[0].cpu().numpy())
+            true_labels.append(tup[1].cpu().numpy())
+
+        preds = np.hstack(preds)
+        true_labels = np.hstack(true_labels)
+
+        cm = confusion_matrix(true_labels, preds)
+        # disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+        # disp.plot()
+        # plt.show()
+
+        nat_err, gender_err = self.analyze_errors(
+            preds, true_labels
+        )
+        print(nat_err.value_counts(normalize=True))
+        print(gender_err.value_counts(normalize=True))
+
         scores, labels = self.compute_verification_scores(
             cohort_strategy=self.cohort_strategy,
             normalization_strategy=self.normalization_strategy
@@ -662,10 +736,10 @@ class SpeakerRecognitionModel(LightningModule):
         test_min_dcf, _ = compute_min_dcf(
             fnrs=fnrs, 
             fprs=fprs, 
-            thresholds=thresholds
+            thresholds=thresholds,
+            p_target=0.01
         )
         test_eer = compute_eer(scores.numpy(), labels.numpy())
-        """
 
         mean_acc = self.test_acc.compute()
         mean_f1 = self.test_f1.compute()
@@ -678,8 +752,11 @@ class SpeakerRecognitionModel(LightningModule):
             "f1": float(mean_f1.cpu().numpy()),
             "top1_acc": float(mean_top1_acc.cpu().numpy()),
             "top5_acc": float(mean_top5_acc.cpu().numpy()),
-            # "min_dcf": float(test_min_dcf),
-            # "eer": float(test_eer),
+            "min_dcf": float(test_min_dcf),
+            "eer": float(test_eer),
+            "nationality_errors": nat_err.tolist(),
+            "gender_errors": gender_err.tolist(),
+            "confusion_matrix": cm.tolist(),
             "embeddings_dim": self.embeddings_dim,
             "loss": str(self.loss_func),
             "optimizer": str(self.optimizer),
